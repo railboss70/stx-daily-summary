@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "Barlow Condensed", "Arial Narrow", ui-sans-serif, sans-serif;
+
+  --color-navy: #0c2340;
+  --color-navy-deep: #071525;
+  --color-steel: #2a4a6b;
+  --color-brass: #c49a36;
+  --color-paper: #f1eee4;
+  --color-paper-bright: #fffcf5;
+  --color-ink: #142033;
+  --color-ok: #1f6b3a;
+  --color-danger: #9b1c1c;
+  --color-warn: #8a5a12;
+
+  --color-background: #f1eee4;
+  --color-foreground: #142033;
+  --color-card: #fffcf5;
+  --color-card-foreground: #142033;
+  --color-primary: #0c2340;
+  --color-primary-foreground: #f1eee4;
+  --color-secondary: #e4dfd2;
+  --color-secondary-foreground: #142033;
+  --color-muted: #e7e1d4;
+  --color-muted-foreground: #5c6570;
+  --color-accent: #dfe6ee;
+  --color-accent-foreground: #0c2340;
+  --color-destructive: #9b1c1c;
+  --color-destructive-foreground: #fffcf5;
+  --color-border: #cfc8b8;
+  --color-line: #cfc8b8;
+  --color-input: #cfc8b8;
+  --color-ring: #0c2340;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius: 10px;
+
+  --shadow-shell: 0 24px 60px -24px rgb(7 21 37 / 0.55);
+  --shadow-card:
+    0 0 0 1px rgb(20 32 51 / 0.06),
+    0 1px 2px -1px rgb(20 32 51 / 0.06),
+    0 2px 6px 0 rgb(20 32 51 / 0.04);
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: var(--color-navy-deep);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+    font-family: var(--font-display);
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+  .pt-safe {
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+  }
+  .font-display {
+    font-family: var(--font-display);
+  }
+  .shadow-card {
+    box-shadow: var(--shadow-card);
+  }
+  .shadow-shell {
+    box-shadow: var(--shadow-shell);
+  }
+  .rail-rule {
+    height: 3px;
+    background-image: repeating-linear-gradient(
+      90deg,
+      var(--color-brass) 0 10px,
+      transparent 10px 16px
+    );
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
