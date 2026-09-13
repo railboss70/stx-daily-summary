@@ -113,11 +113,7 @@ function patch(p) {
 }
 
 function markSvg() {
-  return `<svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
-    <rect width="32" height="32" rx="6" fill="#F3F0E8"/>
-    <polygon points="16,5 27,27 5,27" fill="#0C2340"/>
-    <polygon points="16,12 22,24 10,24" fill="#F3F0E8"/>
-  </svg>`;
+  return `<div class="logo-chip"><img src="./stx-logo.png" alt="STX Corporation" /></div>`;
 }
 
 function field(label, inner) {
@@ -164,7 +160,6 @@ function homeHtml() {
   return `
     <header class="hero">
       ${markSvg()}
-      <small>Railroad construction services</small>
       <h1>Daily Project Summary</h1>
       <p class="date">${esc(formatLong(today))}</p>
     </header>
@@ -189,7 +184,6 @@ function wizardHtml() {
     <header class="hero" style="padding-bottom:14px">
       <div class="brand">${markSvg()}<div>
         <small>Daily project summary</small>
-        <div style="font-size:18px;font-weight:800;letter-spacing:.04em">STX</div>
       </div></div>
       <div class="muted" style="color:rgba(255,252,245,.75);margin-top:8px">${STEPS[step]} · ${step + 1} of ${STEPS.length}</div>
     </header>
@@ -627,7 +621,39 @@ function fileName(r) {
   return (safe || "report") + ".pdf";
 }
 
-function buildPdf(r) {
+let cachedLogo = null;
+async function loadLogo() {
+  if (cachedLogo !== null) return cachedLogo;
+  try {
+    const res = await fetch("./stx-logo-pdf.jpg");
+    const blob = await res.blob();
+    cachedLogo = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = reject;
+      fr.readAsDataURL(blob);
+    });
+  } catch (e) {
+    cachedLogo = "";
+  }
+  return cachedLogo;
+}
+
+function fitAddImage(doc, dataUrl, x, y, maxW, maxH) {
+  const props = doc.getImageProperties(dataUrl);
+  const iw = props.width || 1;
+  const ih = props.height || 1;
+  const scale = Math.min(maxW / iw, maxH / ih);
+  const w = iw * scale;
+  const h = ih * scale;
+  let fmt = String(props.fileType || "JPEG").toUpperCase();
+  if (fmt === "JPG") fmt = "JPEG";
+  if (fmt !== "PNG" && fmt !== "JPEG") fmt = "JPEG";
+  doc.addImage(dataUrl, fmt, x, y, w, h, undefined, "FAST");
+  return { w, h };
+}
+
+async function buildPdf(r) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "pt", format: "letter" });
   const NAVY = [12, 35, 64];
@@ -640,6 +666,7 @@ function buildPdf(r) {
   const margin = 40;
   const contentW = pageW - margin * 2;
   let y = 0;
+  const logo = await loadLogo();
 
   const ensure = (need) => {
     if (y + need > pageH - 48) {
@@ -648,30 +675,25 @@ function buildPdf(r) {
     }
   };
 
-  doc.setFillColor(...NAVY);
-  doc.rect(0, 0, pageW, 72, "F");
-  doc.setFillColor(196, 154, 54);
-  doc.rect(0, 72, pageW, 3, "F");
   doc.setFillColor(255, 252, 245);
-  doc.triangle(42, 16, 64, 56, 20, 56, "F");
-  doc.setFillColor(...NAVY);
-  doc.triangle(42, 26, 56, 52, 28, 52, "F");
-  doc.setTextColor(255, 252, 245);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(20);
-  doc.text("STX", 74, 34);
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.text("CORPORATION  ·  RAILROAD CONSTRUCTION SERVICES", 74, 48);
+  doc.rect(0, 0, pageW, 76, "F");
+  if (logo) {
+    try { fitAddImage(doc, logo, margin, 10, 250, 56); } catch (e) {}
+  }
+  doc.setTextColor(...NAVY);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
-  doc.text("DAILY PROJECT SUMMARY", pageW - margin, 32, { align: "right" });
+  doc.text("DAILY PROJECT SUMMARY", pageW - margin, 30, { align: "right" });
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.text(formatLong(r.date) || r.date, pageW - margin, 46, { align: "right" });
   doc.text("Project # " + (r.projectNumber || "—"), pageW - margin, 58, { align: "right" });
+  doc.setFillColor(...NAVY);
+  doc.rect(0, 76, pageW, 2, "F");
+  doc.setFillColor(196, 154, 54);
+  doc.rect(0, 78, pageW, 3, "F");
 
-  y = 84;
+  y = 92;
   doc.setTextColor(...INK);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
@@ -681,7 +703,7 @@ function buildPdf(r) {
   doc.setFontSize(11);
   doc.setTextColor(...INK);
   doc.text(r.printName || "—", margin + 90, y);
-  y = 96;
+  y = 108;
 
   const section = (title) => {
     y += 4;
@@ -831,13 +853,15 @@ function buildPdf(r) {
       doc.setFontSize(10);
       const noteLines = doc.splitTextToSize((i + 1) + ".  " + note, contentW);
       const noteH = noteLines.length * 13 + 8;
-      ensure(noteH + 220);
+      const maxW = 360;
+      const maxH = 140;
+      ensure(noteH + maxH + 16);
       doc.text(noteLines, margin, y + 12);
       y += noteH;
       if (p.dataUrl) {
         try {
-          doc.addImage(p.dataUrl, "JPEG", margin, y, contentW, 168, undefined, "FAST");
-          y += 176;
+          const placed = fitAddImage(doc, p.dataUrl, margin, y, maxW, maxH);
+          y += placed.h + 10;
         } catch (e) {
           doc.setFont("helvetica", "italic");
           doc.setFontSize(9);
@@ -845,7 +869,7 @@ function buildPdf(r) {
           y += 24;
         }
       }
-      y += 8;
+      y += 6;
     });
   }
 
@@ -874,7 +898,7 @@ function downloadBlob(blob, name) {
 async function downloadPdf() {
   const r = active();
   if (!window.jspdf) { toast("PDF library still loading — try again."); return; }
-  downloadBlob(buildPdf(r), fileName(r));
+  downloadBlob(await buildPdf(r), fileName(r));
   toast("PDF saved.");
 }
 
@@ -885,7 +909,7 @@ async function sendReport() {
     return;
   }
   if (!window.jspdf) { toast("PDF library still loading — try again."); return; }
-  const pdf = buildPdf(r);
+  const pdf = await buildPdf(r);
   const pdfFile = new File([pdf], fileName(r), { type: "application/pdf" });
   const photoFiles = r.photos.map((p, i) => dataUrlFile(p.dataUrl, `job-photo-${i + 1}.jpg`));
   const files = [pdfFile, ...photoFiles];
@@ -941,6 +965,7 @@ function dataUrlFile(dataUrl, name) {
 try {
   load();
   render();
+  loadLogo();
 } catch (err) {
   const el = document.getElementById("app");
   if (el) el.innerHTML = "<header class=\"hero\"><h1>STX Daily</h1></header><main class=\"content\"><div class=\"card\"><p>Could not load the report app. Close Safari and open the link again.</p><p class=\"hint\">" + String(err) + "</p></div></main>";

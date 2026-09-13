@@ -11,6 +11,46 @@ const LINE: [number, number, number] = [196, 188, 168];
 const HEAD_BG: [number, number, number] = [232, 226, 212];
 const PAPER: [number, number, number] = [255, 252, 245];
 
+let logoDataUrl: string | null = null;
+
+async function loadLogoDataUrl() {
+  if (logoDataUrl !== null) return logoDataUrl;
+  try {
+    const res = await fetch("/stx-logo-pdf.jpg");
+    const blob = await res.blob();
+    logoDataUrl = await new Promise<string>((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result || ""));
+      fr.onerror = () => reject(fr.error);
+      fr.readAsDataURL(blob);
+    });
+  } catch {
+    logoDataUrl = "";
+  }
+  return logoDataUrl;
+}
+
+function fitAddImage(
+  doc: jsPDF,
+  dataUrl: string,
+  x: number,
+  y: number,
+  maxW: number,
+  maxH: number,
+) {
+  const props = doc.getImageProperties(dataUrl);
+  const iw = props.width || 1;
+  const ih = props.height || 1;
+  const scale = Math.min(maxW / iw, maxH / ih);
+  const w = iw * scale;
+  const h = ih * scale;
+  let fmt = String(props.fileType || "JPEG").toUpperCase();
+  if (fmt === "JPG") fmt = "JPEG";
+  if (fmt !== "PNG" && fmt !== "JPEG") fmt = "JPEG";
+  doc.addImage(dataUrl, fmt, x, y, w, h, undefined, "FAST");
+  return { w, h };
+}
+
 function yn(v: string) {
   if (v === "yes") return "YES";
   if (v === "no") return "NO";
@@ -31,6 +71,8 @@ export async function buildReportPdf(report: Report, photos: Photo[]): Promise<B
   const contentW = pageW - margin * 2;
   let y = 0;
 
+  const logo = await loadLogoDataUrl();
+
   const ensure = (need: number) => {
     if (y + need > 756) {
       doc.addPage();
@@ -38,33 +80,27 @@ export async function buildReportPdf(report: Report, photos: Photo[]): Promise<B
     }
   };
 
-  // Header bar
-  doc.setFillColor(...NAVY);
-  doc.rect(0, 0, pageW, 78, "F");
-  doc.setFillColor(196, 154, 54);
-  doc.rect(0, 78, pageW, 3, "F");
-
-  // Triangle mark
-  doc.setFillColor(255, 252, 245);
-  doc.triangle(44, 18, 68, 62, 20, 62, "F");
-  doc.setFillColor(...NAVY);
-  doc.triangle(44, 30, 58, 56, 30, 56, "F");
-
-  doc.setTextColor(255, 252, 245);
+  doc.setFillColor(...PAPER);
+  doc.rect(0, 0, pageW, 76, "F");
+  if (logo) {
+    try {
+      fitAddImage(doc, logo, margin, 10, 250, 56);
+    } catch {
+      /* skip */
+    }
+  }
+  doc.setTextColor(...NAVY);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(22);
-  doc.text("STX", 78, 38);
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.text("CORPORATION  ·  RAILROAD CONSTRUCTION SERVICES", 78, 52);
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(13);
-  doc.text("DAILY PROJECT SUMMARY", pageW - margin, 36, { align: "right" });
+  doc.setFontSize(12);
+  doc.text("DAILY PROJECT SUMMARY", pageW - margin, 30, { align: "right" });
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  doc.text(formatLongDate(report.date) || report.date, pageW - margin, 52, { align: "right" });
+  doc.text(formatLongDate(report.date) || report.date, pageW - margin, 46, { align: "right" });
   doc.text(`Project # ${report.projectNumber || "—"}`, pageW - margin, 64, { align: "right" });
+  doc.setFillColor(...NAVY);
+  doc.rect(0, 76, pageW, 2, "F");
+  doc.setFillColor(196, 154, 54);
+  doc.rect(0, 78, pageW, 3, "F");
 
   y = 98;
   doc.setTextColor(...INK);
@@ -254,26 +290,23 @@ export async function buildReportPdf(report: Report, photos: Photo[]): Promise<B
     });
     y = 64;
 
-    const photoW = contentW;
-    const photoH = 280;
+    const photoW = 360;
+    const photoH = 140;
     for (let i = 0; i < photos.length; i += 1) {
       const photo = photos[i];
       if (!photo) continue;
-      ensure(photoH + 36);
+      const caption = photo.caption.trim() || `Photo ${i + 1}`;
+      const captionLines = doc.splitTextToSize(`${i + 1}.  ${caption}`, contentW) as string[];
+      const captionH = captionLines.length * 13 + 8;
+      ensure(captionH + photoH + 16);
       doc.setFont("helvetica", "bold");
       doc.setFontSize(10);
       doc.setTextColor(...INK);
-      const caption = photo.caption.trim() || `Photo ${i + 1}`;
-      doc.text(`${i + 1}.  ${caption}`, margin, y + 12);
-      y += 18;
+      doc.text(captionLines, margin, y + 12);
+      y += captionH;
       try {
-        const dims = await imageSize(photo.dataUrl);
-        const fit = fitContain(dims.w, dims.h, photoW, photoH);
-        doc.setDrawColor(...LINE);
-        doc.setFillColor(245, 242, 234);
-        doc.rect(margin, y, photoW, fit.h, "S");
-        doc.addImage(photo.dataUrl, "JPEG", margin + (photoW - fit.w) / 2, y, fit.w, fit.h, undefined, "FAST");
-        y += fit.h + 16;
+        const placed = fitAddImage(doc, photo.dataUrl, margin, y, photoW, photoH);
+        y += placed.h + 14;
       } catch {
         doc.setFont("helvetica", "italic");
         doc.text("(photo could not be embedded)", margin, y + 14);
@@ -354,18 +387,4 @@ function drawMaterialTable(
   }
 
   return h;
-}
-
-function imageSize(dataUrl: string): Promise<{ w: number; h: number }> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
-    img.onerror = () => reject(new Error("image"));
-    img.src = dataUrl;
-  });
-}
-
-function fitContain(w: number, h: number, maxW: number, maxH: number) {
-  const scale = Math.min(maxW / w, maxH / h);
-  return { w: w * scale, h: h * scale };
 }
