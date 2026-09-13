@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0C2340" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="STX Daily" />
+  <link rel="apple-touch-icon" href="icon-180.png" />
+  <link rel="icon" href="icon-192.png" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <title>STX Daily Summary</title>
+  <style>
+    :root {
+      --navy: #0C2340;
+      --navy-deep: #071525;
+      --brass: #c49a36;
+      --paper: #f1eee4;
+      --card: #fffcf5;
+      --ink: #142033;
+      --muted: #5c6570;
+      --line: #cfc8b8;
+      --ok: #1f6b3a;
+      --danger: #9b1c1c;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; background: var(--navy-deep); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body { min-height: 100dvh; }
+    .app { max-width: 430px; margin: 0 auto; min-height: 100dvh; background: var(--paper); display: flex; flex-direction: column; }
+    .hero { background: var(--navy); color: var(--card); padding: 18px 16px 20px; padding-top: calc(18px + env(safe-area-inset-top)); }
+    .brand { display: flex; gap: 12px; align-items: center; }
+    .mark { width: 44px; height: 44px; flex: none; }
+    .hero small { display: block; color: var(--brass); letter-spacing: .18em; text-transform: uppercase; font-size: 11px; font-weight: 700; margin-top: 10px; }
+    .hero h1 { margin: 4px 0 0; font-size: 28px; letter-spacing: .04em; }
+    .hero .date { margin: 6px 0 0; color: rgba(255,252,245,.75); font-size: 15px; }
+    .content { flex: 1; padding: 16px 16px calc(24px + env(safe-area-inset-bottom)); }
+    .card { background: var(--card); border-radius: 14px; padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 2px rgb(20 32 51 / .06); }
+    .card h2 { margin: 0 0 10px; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--navy); }
+    .hint { font-size: 13px; color: var(--muted); line-height: 1.4; margin: 0 0 10px; }
+    label { display: block; font-size: 12px; font-weight: 700; color: var(--navy); margin: 10px 0 4px; }
+    input, textarea, select { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 12px; font-size: 16px; background: #fff; color: var(--ink); font-family: inherit; }
+    textarea { min-height: 88px; resize: vertical; }
+    button { font-family: inherit; }
+    .btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; border: 0; border-radius: 12px; padding: 14px 12px; font-size: 16px; font-weight: 700; margin-top: 8px; }
+    .btn-navy { background: var(--navy); color: var(--card); }
+    .btn-gold { background: var(--brass); color: #1a1403; }
+    .btn-ghost { background: #e8e2d4; color: var(--navy); }
+    .btn-danger { background: #f3e0e0; color: var(--danger); }
+    .btn-outline { background: var(--card); color: var(--navy); border: 1.5px solid var(--navy); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+    .chip { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 9px 12px; font-size: 14px; }
+    .chip.other { border: 1.5px dashed var(--navy); color: var(--navy); font-weight: 700; }
+    .chip.recent { border-color: #9bb3cc; background: #e8eef4; color: var(--navy); }
+    .item { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 10px; }
+    .item-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+    .yn { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .yn button { border: 1.5px solid var(--line); background: var(--card); border-radius: 10px; padding: 12px; font-size: 15px; font-weight: 700; color: var(--ink); }
+    .yn button.on-yes { background: var(--ok); border-color: var(--ok); color: #fff; }
+    .yn button.on-no { background: var(--danger); border-color: var(--danger); color: #fff; }
+    .nav { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+    .steps { display: flex; gap: 4px; margin: 0 0 12px; }
+    .steps i { flex: 1; height: 4px; border-radius: 99px; background: #d5cfc0; }
+    .steps i.on { background: var(--navy); }
+    .list-row { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+    .list-row:last-child { border-bottom: 0; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .photos { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .photos img { width: 100%; aspect-ratio: 4/3; object-fit: cover; border-radius: 10px; background: #ddd; }
+    .sig { width: 100%; height: 160px; border: 1px solid var(--line); border-radius: 10px; background: #fff; touch-action: none; }
+    .empty { color: var(--muted); font-size: 14px; }
+    .toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--navy); color: #fff; padding: 10px 14px; border-radius: 999px; font-size: 13px; display: none; z-index: 20; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="app" id="app"></div>
+  <div class="toast" id="toast"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js"></script>
+  <script src="app.js?v=1"></script>
+</body>
+</html>

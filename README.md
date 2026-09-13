@@ -8,12 +8,11 @@ Fill the shift report, attach 3–4 job photos, sign, and send a PDF to **report
 
 Same flow as PrecisionTrack:
 
-1. Publish this Grok app (or open the live app URL in **Safari** — not Chrome, not the in-app preview).
+1. Open this link in **Safari** (not Chrome):
+   https://railboss70.github.io/stx-daily-summary/
 2. Tap **Share**.
 3. Tap **Add to Home Screen**.
-4. Name it **STX Daily** (or whatever you want) and Add.
-
-On the app home screen there is also **Add to iPhone home screen**, which walks through those steps.
+4. Name it **STX Daily** and Add.
 
 Reports stay on the phone until you send them. Photos and form data are not uploaded to GitHub.
 
