@@ -61,6 +61,8 @@ export interface Report {
   photoCount: number;
   signatureDataUrl: string;
   recipientEmail: string;
+  pdfTitle: string;
+  pdfTitleCustom: boolean;
 }
 
 export interface Settings {

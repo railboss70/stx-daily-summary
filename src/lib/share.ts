@@ -1,6 +1,6 @@
 import { formatLongDate } from "@/lib/dates";
 import { dataUrlToFile } from "@/lib/photo-db";
-import { reportFileName } from "@/lib/pdf";
+import { reportFileName } from "@/lib/pdf-name";
 import type { Photo, Report } from "@/lib/types";
 
 export function formatReportText(report: Report): string {

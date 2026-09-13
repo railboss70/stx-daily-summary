@@ -53,6 +53,8 @@ function blankReport(settings) {
     photos: [],
     signatureDataUrl: "",
     recipientEmail: settings.defaultEmail || DEFAULT_EMAIL,
+    pdfTitle: "",
+    pdfTitleCustom: false,
   };
 }
 
@@ -268,16 +270,25 @@ function stepHtml(r) {
   }
   if (step === 5) {
     return `<div class="card"><h2>Job photos</h2>
-      <p class="hint">Take 3–4 photos of the work. Camera opens on the phone.</p>
-      <div class="photos">
-        ${r.photos.map((p, i) => `<div><img src="${p.dataUrl}" alt="Photo ${i + 1}" /><button class="btn btn-danger" data-rmphoto="${p.id}">Remove</button></div>`).join("")}
+      <p class="hint">Add 3–4 photos. Take a new one or pick from your camera roll, then add a short note on each.</p>
+      <div class="nav" style="margin:0 0 12px">
+        <button class="btn btn-navy" data-act="photo" style="margin:0">Take photo</button>
+        <button class="btn btn-outline" data-act="library" style="margin:0">From library</button>
       </div>
-      <button class="btn btn-navy" data-act="photo">Take / add photo</button>
       <input id="photoFile" type="file" accept="image/*" capture="environment" hidden />
+      <input id="libraryFile" type="file" accept="image/*" multiple hidden />
+      ${r.photos.map((p, i) => `<div class="item">
+        <img src="${p.dataUrl}" alt="Photo ${i + 1}" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:10px;background:#ddd" />
+        <label>Photo ${i + 1} notes</label>
+        <input data-caption="${p.id}" value="${esc(p.caption || "")}" placeholder="What does this show?" />
+        <button class="btn btn-danger" data-rmphoto="${p.id}">Remove</button>
+      </div>`).join("") || `<p class="empty">No photos yet.</p>`}
     </div>`;
   }
   return `<div class="card"><h2>Sign and send</h2>
       ${field("Print name", input("printName", r.printName, 'placeholder="Your name"'))}
+      ${field("PDF file name", `<input data-k="pdfTitle" value="${esc(r.pdfTitle || autoTitle(r))}" placeholder="25125- 260913 Matt" />`)}
+      <p class="hint">Office format is project- YYMMDD firstname, like 25125- 260913 Matt. Edit if you need Matt instead of Matthew.</p>
       ${field("Email to", `<input type="email" data-k="recipientEmail" value="${esc(r.recipientEmail)}" />`)}
       <p class="hint">This goes out with the report to ${DEFAULT_EMAIL}</p>
       <label>Signature</label>
@@ -347,7 +358,19 @@ function bind() {
     save();
   }));
   document.querySelectorAll("[data-k]").forEach((el) => el.addEventListener("input", () => {
-    patch({ [el.getAttribute("data-k")]: el.value });
+    const k = el.getAttribute("data-k");
+    const extra = k === "pdfTitle" ? { pdfTitleCustom: true } : {};
+    patch({ [k]: el.value, ...extra });
+    const r = active();
+    if (r && !r.pdfTitleCustom && (k === "date" || k === "projectNumber" || k === "printName")) {
+      patch({ pdfTitle: autoTitle(r) });
+    }
+  }));
+  document.querySelectorAll("[data-caption]").forEach((el) => el.addEventListener("input", () => {
+    const id = el.getAttribute("data-caption");
+    const r = active();
+    r.photos = r.photos.map((p) => p.id === id ? { ...p, caption: el.value } : p);
+    patch({});
   }));
   document.querySelectorAll("[data-row]").forEach((el) => el.addEventListener("input", () => {
     const key = el.getAttribute("data-row");
@@ -394,8 +417,10 @@ function bind() {
     render();
   }));
   if (step === 6) setupSig();
-  const file = document.getElementById("photoFile");
-  if (file) file.addEventListener("change", onPhoto);
+  const cam = document.getElementById("photoFile");
+  const lib = document.getElementById("libraryFile");
+  if (cam) cam.addEventListener("change", onPhoto);
+  if (lib) lib.addEventListener("change", onPhoto);
 }
 
 function onAct(e) {
@@ -411,17 +436,13 @@ function onAct(e) {
   }
   if (act === "other") addWriteIn();
   if (act === "photo") document.getElementById("photoFile")?.click();
+  if (act === "library") document.getElementById("libraryFile")?.click();
   if (act === "clearsig") {
     patch({ signatureDataUrl: "" });
     setupSig(true);
   }
   if (act === "pdf") downloadPdf();
   if (act === "send") sendReport();
-  const file = document.getElementById("photoFile");
-  if (file && !file._bound) {
-    file._bound = true;
-    file.addEventListener("change", onPhoto);
-  }
 }
 
 function canNext() {
@@ -490,12 +511,15 @@ function addWriteIn() {
 }
 
 async function onPhoto(e) {
-  const file = e.target.files?.[0];
+  const files = [...(e.target.files || [])];
   e.target.value = "";
-  if (!file) return;
-  const dataUrl = await compressImage(file);
+  if (!files.length) return;
   const r = active();
-  r.photos.push({ id: uid(), dataUrl, caption: "", takenAt: new Date().toISOString() });
+  for (const file of files) {
+    if (!file.type || !file.type.startsWith("image/")) continue;
+    const dataUrl = await compressImage(file);
+    r.photos.push({ id: uid(), dataUrl, caption: "", takenAt: new Date().toISOString() });
+  }
   save();
   render();
 }
@@ -590,104 +614,251 @@ function reportText(r) {
   ].filter((x) => x !== "").join("\n");
 }
 
+function autoTitle(r) {
+  const proj = String(r.projectNumber || "").trim() || "00000";
+  const ymd = String(r.date || "").replace(/-/g, "").slice(2);
+  const first = String(r.printName || "").trim().split(/\s+/)[0] || "Name";
+  return proj + "- " + ymd + " " + first;
+}
+
 function fileName(r) {
-  return `STX-Daily-${r.date || "report"}-${(r.projectNumber || "project").replace(/[^\w.-]+/g, "_")}.pdf`;
+  const raw = String(r.pdfTitle || autoTitle(r)).trim().replace(/\.pdf$/i, "");
+  const safe = raw.replace(/[\\/:*?"<>|]/g, "-");
+  return (safe || "report") + ".pdf";
 }
 
 function buildPdf(r) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "pt", format: "letter" });
   const NAVY = [12, 35, 64];
+  const INK = [20, 32, 51];
+  const MUTED = [92, 101, 112];
+  const LINE = [196, 188, 168];
+  const HEAD = [232, 226, 212];
   const pageW = 612;
-  const margin = 36;
+  const pageH = 792;
+  const margin = 40;
+  const contentW = pageW - margin * 2;
   let y = 0;
-  const ensure = (need) => { if (y + need > 756) { doc.addPage(); y = 36; } };
+
+  const ensure = (need) => {
+    if (y + need > pageH - 48) {
+      doc.addPage();
+      y = 40;
+    }
+  };
 
   doc.setFillColor(...NAVY);
-  doc.rect(0, 0, pageW, 78, "F");
+  doc.rect(0, 0, pageW, 72, "F");
   doc.setFillColor(196, 154, 54);
-  doc.rect(0, 78, pageW, 3, "F");
+  doc.rect(0, 72, pageW, 3, "F");
   doc.setFillColor(255, 252, 245);
-  doc.triangle(44, 18, 68, 62, 20, 62, "F");
+  doc.triangle(42, 16, 64, 56, 20, 56, "F");
   doc.setFillColor(...NAVY);
-  doc.triangle(44, 30, 58, 56, 30, 56, "F");
+  doc.triangle(42, 26, 56, 52, 28, 52, "F");
   doc.setTextColor(255, 252, 245);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(22);
-  doc.text("STX", 78, 38);
+  doc.setFontSize(20);
+  doc.text("STX", 74, 34);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
-  doc.text("CORPORATION  ·  RAILROAD CONSTRUCTION SERVICES", 78, 52);
+  doc.text("CORPORATION  ·  RAILROAD CONSTRUCTION SERVICES", 74, 48);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(13);
-  doc.text("DAILY PROJECT SUMMARY", pageW - margin, 36, { align: "right" });
+  doc.setFontSize(12);
+  doc.text("DAILY PROJECT SUMMARY", pageW - margin, 32, { align: "right" });
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  doc.text(formatLong(r.date) || r.date, pageW - margin, 52, { align: "right" });
-  doc.text(`Project # ${r.projectNumber || "—"}`, pageW - margin, 64, { align: "right" });
+  doc.text(formatLong(r.date) || r.date, pageW - margin, 46, { align: "right" });
+  doc.text("Project # " + (r.projectNumber || "—"), pageW - margin, 58, { align: "right" });
 
-  y = 98;
+  y = 84;
+  doc.setTextColor(...INK);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(...MUTED);
+  doc.text("SUPERVISOR", margin, y);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.setTextColor(...INK);
+  doc.text(r.printName || "—", margin + 90, y);
+  y = 96;
+
   const section = (title) => {
-    ensure(22);
+    y += 4;
+    ensure(28);
     doc.setFillColor(...NAVY);
-    doc.rect(margin, y, pageW - margin * 2, 18, "F");
+    doc.rect(margin, y, contentW, 18, "F");
     doc.setTextColor(255, 252, 245);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
-    doc.text(title.toUpperCase(), margin + 8, y + 12.5);
-    doc.setTextColor(20, 32, 51);
-    y += 22;
+    doc.text(String(title).toUpperCase(), margin + 8, y + 12);
+    doc.setTextColor(...INK);
+    y += 18;
   };
-  const para = (text) => {
-    const lines = doc.splitTextToSize(text || "—", pageW - margin * 2 - 8);
-    ensure(lines.length * 13 + 8);
+
+  const para = (text, minH) => {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
-    doc.text(lines, margin + 4, y);
-    y += lines.length * 13 + 10;
+    const lines = doc.splitTextToSize(String(text || "—"), contentW - 16);
+    const h = Math.max(minH || 22, lines.length * 12 + 12);
+    ensure(h);
+    doc.text(lines, margin + 8, y + 12);
+    y += h;
   };
-  const kv = (k, v) => para(`${k}: ${v || "—"}`);
 
-  section("Job");
-  kv("Date", formatLong(r.date) || r.date);
-  kv("Project #", r.projectNumber);
-  kv("Supervisor", r.printName);
+  const kvRow = (label, value) => {
+    ensure(18);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor(...MUTED);
+    doc.text(label, margin + 8, y + 12);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(...INK);
+    doc.text(String(value || "—"), margin + 130, y + 12);
+    y += 16;
+  };
+
+  const table = (headers, rows, widths) => {
+    const body = rows.length ? rows : [headers.map(() => "—")];
+    doc.setDrawColor(...LINE);
+    doc.setLineWidth(0.4);
+    body.forEach((row) => {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      const wrapped = headers.map((_, i) => doc.splitTextToSize(String(row[i] ?? ""), (widths[i] || 80) - 10));
+      const h = Math.max(16, Math.max(...wrapped.map((ln) => ln.length)) * 11 + 6);
+      ensure(h + 4);
+      let x = margin;
+      headers.forEach((_, i) => {
+        const w = widths[i];
+        doc.rect(x, y, w, h);
+        doc.text(wrapped[i], x + 5, y + 12);
+        x += w;
+      });
+      y += h;
+    });
+    y += 4;
+  };
+
+  const tableHead = (headers, widths) => {
+    ensure(20);
+    doc.setFillColor(...HEAD);
+    doc.rect(margin, y, contentW, 16, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(...INK);
+    let x = margin;
+    headers.forEach((h, i) => {
+      doc.text(h, x + 5, y + 11);
+      x += widths[i];
+    });
+    y += 16;
+  };
+
   section("Summary of work performed");
-  para(r.summary);
-  section("Delays / interruptions");
-  para(r.delays || "None");
-  section("Received materials");
-  para(r.received.filter((x) => x.description.trim()).map((x) => `${x.description}  qty ${x.qty || "—"}  BOL ${yn(x.bolFiled)}`).join("\n") || "None");
-  section("Materials consumed");
-  para(r.consumed.filter((x) => x.description.trim()).map((x) => `${x.description}  qty ${x.qty || "—"}`).join("\n") || "None");
-  section("Manpower and equipment");
-  para(r.manpower.filter((x) => x.className.trim()).map((x) => `${x.className}  qty ${x.qty || "—"}  hrs ${x.hours || "—"}`).join("\n") || "None");
-  section("Subcontractors");
-  para(r.subcontractors.filter((x) => x.description.trim()).map((x) => `${x.description}  hrs ${x.hours || "—"}${x.details ? " — " + x.details : ""}`).join("\n") || "None");
-  section("Closeout");
-  kv("Incidents", yn(r.incidents) + (r.incidents === "yes" && r.incidentsExplain ? " — " + r.incidentsExplain : ""));
-  kv("Equipment issues", yn(r.equipmentIssues) + (r.equipmentIssues === "yes" && r.equipmentIssuesExplain ? " — " + r.equipmentIssuesExplain : ""));
-  kv("Site secure", yn(r.siteSecure));
-  kv("Derails down", yn(r.derailsDown));
-  kv("Locks removed", yn(r.locksRemoved));
+  para(r.summary, 36);
 
-  if (r.photos.length) {
-    section("Job photos");
+  section("Delays / interruptions");
+  para(r.delays || "None", 22);
+
+  const rec = (r.received || []).filter((x) => String(x.description || "").trim());
+  section("Received and accounted materials");
+  tableHead(["Description", "QTY", "BOL filed"], [340, 80, 112]);
+  table(["Description", "QTY", "BOL"], rec.map((x) => [x.description, x.qty || "—", yn(x.bolFiled)]), [340, 80, 112]);
+
+  const con = (r.consumed || []).filter((x) => String(x.description || "").trim());
+  section("Materials consumed");
+  tableHead(["Description", "QTY"], [420, 112]);
+  table(["Description", "QTY"], con.map((x) => [x.description, x.qty || "—"]), [420, 112]);
+
+  const crew = (r.manpower || []).filter((x) => String(x.className || "").trim());
+  section("Manpower and equipment");
+  tableHead(["Class / equipment", "QTY", "Hours"], [332, 100, 100]);
+  table(["Class", "QTY", "Hours"], crew.map((x) => [x.className, x.qty || "—", x.hours || "—"]), [332, 100, 100]);
+
+  const subs = (r.subcontractors || []).filter((x) => String(x.description || "").trim());
+  section("Subcontractors");
+  tableHead(["Description", "Hours"], [432, 100]);
+  table(["Description", "Hours"], subs.length ? subs.map((x) => [x.description + (x.details ? " — " + x.details : ""), x.hours || "—"]) : [["None", ""]], [432, 100]);
+
+  section("Closeout");
+  kvRow("Incidents", yn(r.incidents));
+  if (r.incidents === "yes" && r.incidentsExplain) para(r.incidentsExplain, 24);
+  kvRow("Equipment issues", yn(r.equipmentIssues));
+  if (r.equipmentIssues === "yes" && r.equipmentIssuesExplain) para(r.equipmentIssuesExplain, 24);
+  kvRow("Site secure", yn(r.siteSecure));
+  kvRow("Derails down", yn(r.derailsDown));
+  kvRow("Locks removed", yn(r.locksRemoved));
+
+  y += 8;
+  ensure(62);
+  doc.setDrawColor(...LINE);
+  doc.setLineWidth(0.7);
+  doc.line(margin, y + 40, margin + 200, y + 40);
+  doc.line(margin + 240, y + 40, margin + contentW, y + 40);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.setTextColor(...MUTED);
+  doc.text("PRINT NAME", margin, y + 52);
+  doc.text("SIGNATURE", margin + 240, y + 52);
+  doc.setTextColor(...INK);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.text(r.printName || " ", margin, y + 34);
+  if (r.signatureDataUrl) {
+    try { doc.addImage(r.signatureDataUrl, "PNG", margin + 240, y - 8, 180, 46); } catch (e) {}
+  }
+  y += 64;
+
+  if ((r.photos || []).length) {
+    doc.addPage();
+    y = 40;
+    doc.setFillColor(...NAVY);
+    doc.rect(0, 0, pageW, 44, "F");
+    doc.setTextColor(255, 252, 245);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Job photos", margin, 28);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.text("Project # " + (r.projectNumber || "—") + "  ·  " + (formatLong(r.date) || r.date), pageW - margin, 28, { align: "right" });
+    y = 60;
+    doc.setTextColor(...INK);
     r.photos.forEach((p, i) => {
-      ensure(220);
-      try { doc.addImage(p.dataUrl, "JPEG", margin, y, 240, 180); } catch {}
-      doc.setFontSize(8);
-      doc.text(`Photo ${i + 1}`, margin + 250, y + 12);
-      y += 190;
+      const note = String(p.caption || "").trim() || ("Photo " + (i + 1));
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      const noteLines = doc.splitTextToSize((i + 1) + ".  " + note, contentW);
+      const noteH = noteLines.length * 13 + 8;
+      ensure(noteH + 220);
+      doc.text(noteLines, margin, y + 12);
+      y += noteH;
+      if (p.dataUrl) {
+        try {
+          doc.addImage(p.dataUrl, "JPEG", margin, y, contentW, 168, undefined, "FAST");
+          y += 176;
+        } catch (e) {
+          doc.setFont("helvetica", "italic");
+          doc.setFontSize(9);
+          doc.text("(photo could not be embedded)", margin, y + 14);
+          y += 24;
+        }
+      }
+      y += 8;
     });
   }
-  if (r.signatureDataUrl) {
-    section("Signature");
-    ensure(90);
-    try { doc.addImage(r.signatureDataUrl, "PNG", margin, y, 200, 70); } catch {}
-    y += 80;
-    para(r.printName);
+
+  const pages = doc.getNumberOfPages();
+  for (let i = 1; i <= pages; i += 1) {
+    doc.setPage(i);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(...MUTED);
+    doc.text("STX Corporation — Daily Project Summary", margin, pageH - 22);
+    doc.text("Page " + i + " of " + pages, pageW - margin, pageH - 22, { align: "right" });
   }
+
   return doc.output("blob");
 }
 

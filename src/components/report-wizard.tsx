@@ -21,7 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { YesNo } from "@/components/yes-no";
 import { formatLongDate } from "@/lib/dates";
 import { loadPhotos, savePhotos } from "@/lib/photo-db";
-import { buildReportPdf, reportFileName } from "@/lib/pdf";
+import { buildReportPdf, reportFileName, suggestedPdfTitle } from "@/lib/pdf";
 import {
   canShareFiles,
   downloadBlob,
@@ -862,6 +862,16 @@ function SendStep({
         ) : null}
       </SectionCard>
       <SectionCard title="Send report">
+        <Field
+          label="PDF file name"
+          hint="Office format is project- YYMMDD firstname, like 25125- 260913 Matt"
+        >
+          <Input
+            value={report.pdfTitle || suggestedPdfTitle(report)}
+            onChange={(e) => patch({ pdfTitle: e.target.value, pdfTitleCustom: true })}
+            autoCapitalize="words"
+          />
+        </Field>
         <Field label="Email to" hint="Default is reports@stxrailroad.com">
           <Input
             type="email"

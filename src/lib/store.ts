@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { todayISO } from "@/lib/dates";
+import { suggestedPdfTitle } from "@/lib/pdf-name";
 import { deletePhotos } from "@/lib/photo-db";
 import {
   DEFAULT_EMAIL,
@@ -54,6 +55,8 @@ export function createBlankReport(settings: Settings): Report {
     photoCount: 0,
     signatureDataUrl: "",
     recipientEmail: settings.defaultEmail || DEFAULT_EMAIL,
+    pdfTitle: "",
+    pdfTitleCustom: false,
   };
 }
 
@@ -114,10 +117,14 @@ export const useReportStore = create<ReportState>()(
       updateReport: (id, patch) => {
         const current = get().reports[id];
         if (!current) return;
+        const next: Report = { ...current, ...patch, updatedAt: new Date().toISOString() };
+        if (!next.pdfTitleCustom && ("date" in patch || "projectNumber" in patch || "printName" in patch || !next.pdfTitle)) {
+          next.pdfTitle = suggestedPdfTitle(next);
+        }
         set({
           reports: {
             ...get().reports,
-            [id]: { ...current, ...patch, updatedAt: new Date().toISOString() },
+            [id]: next,
           },
         });
       },
@@ -177,8 +184,19 @@ export const useReportStore = create<ReportState>()(
         let reportsChanged = false;
         const nextReports: Record<string, Report> = { ...reports };
         for (const [id, report] of Object.entries(nextReports)) {
+          let changed = report;
           if (report.recipientEmail.includes("stxrrailroad")) {
-            nextReports[id] = { ...report, recipientEmail: DEFAULT_EMAIL };
+            changed = { ...changed, recipientEmail: DEFAULT_EMAIL };
+          }
+          if (changed.pdfTitle == null || changed.pdfTitleCustom == null) {
+            changed = {
+              ...changed,
+              pdfTitle: changed.pdfTitle || suggestedPdfTitle(changed),
+              pdfTitleCustom: Boolean(changed.pdfTitleCustom),
+            };
+          }
+          if (changed !== report) {
+            nextReports[id] = changed;
             reportsChanged = true;
           }
         }

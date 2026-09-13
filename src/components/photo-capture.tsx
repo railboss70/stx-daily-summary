@@ -59,7 +59,7 @@ export function PhotoCapture({
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted-foreground">
-        Add 3 or 4 job-site photos. They go out with the report.
+        Add 3 or 4 job-site photos from the camera or your library. Put a short note on each one.
         {photos.length < MIN_PHOTOS
           ? ` ${MIN_PHOTOS - photos.length} more needed.`
           : ` ${photos.length} attached.`}
@@ -125,7 +125,7 @@ export function PhotoCapture({
                 <Input
                   value={photo.caption}
                   onChange={(e) => caption(photo.id, e.target.value)}
-                  placeholder={`Caption for photo ${index + 1} (optional)`}
+                  placeholder={`Photo ${index + 1} notes — turnout, surfacing, materials…`}
                   aria-label={`Caption for photo ${index + 1}`}
                 />
               </div>

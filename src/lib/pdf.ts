@@ -2,6 +2,8 @@ import { jsPDF } from "jspdf";
 import { formatLongDate } from "@/lib/dates";
 import type { Photo, Report } from "@/lib/types";
 
+export { reportFileName, suggestedPdfTitle } from "@/lib/pdf-name";
+
 const NAVY: [number, number, number] = [12, 35, 64];
 const INK: [number, number, number] = [20, 32, 51];
 const MUTED: [number, number, number] = [92, 101, 112];
@@ -366,9 +368,4 @@ function imageSize(dataUrl: string): Promise<{ w: number; h: number }> {
 function fitContain(w: number, h: number, maxW: number, maxH: number) {
   const scale = Math.min(maxW / w, maxH / h);
   return { w: w * scale, h: h * scale };
-}
-
-export function reportFileName(report: Report) {
-  const proj = (report.projectNumber || "project").replace(/[^\w.-]+/g, "_");
-  return `STX-DPS-${proj}-${report.date}.pdf`;
 }
