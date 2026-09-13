@@ -128,9 +128,12 @@ function ta(name, value, ph = "") {
   return `<textarea data-k="${name}" placeholder="${esc(ph)}">${esc(value || "")}</textarea>`;
 }
 function esc(s) {
-  return String(s ?? "")
-    .replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">")
-    .replace(/"/g, """);
+  return String(s ?? "").replace(/[&<>"]/g, (ch) => {
+    if (ch === "&") return "\u0026amp;";
+    if (ch === "<") return "\u0026lt;";
+    if (ch === ">") return "\u0026gt;";
+    return "\u0026quot;";
+  });
 }
 
 function render() {
@@ -764,5 +767,11 @@ function dataUrlFile(dataUrl, name) {
   return new File([bytes], name, { type: mime });
 }
 
-load();
-render();
+try {
+  load();
+  render();
+} catch (err) {
+  const el = document.getElementById("app");
+  if (el) el.innerHTML = "<header class=\"hero\"><h1>STX Daily</h1></header><main class=\"content\"><div class=\"card\"><p>Could not load the report app. Close Safari and open the link again.</p><p class=\"hint\">" + String(err) + "</p></div></main>";
+  console.error(err);
+}
