@@ -6,6 +6,7 @@ export interface MaterialReceived {
   id: string;
   description: string;
   qty: string;
+  uom: string;
   bolFiled: YesNo;
 }
 
@@ -13,6 +14,7 @@ export interface MaterialConsumed {
   id: string;
   description: string;
   qty: string;
+  uom: string;
 }
 
 export interface ManpowerRow {
@@ -74,6 +76,20 @@ export interface Settings {
 }
 
 export const DEFAULT_EMAIL = "reports@stxrailroad.com";
+
+export const MATERIAL_UOM = [
+  "EA",
+  "LF",
+  "TF",
+  "TN",
+  "CY",
+  "GAL",
+  "BAG",
+  "BDL",
+  "LB",
+  "SF",
+  "SY",
+] as const;
 
 export const MANPOWER_PRESETS = [
   "Foreman",

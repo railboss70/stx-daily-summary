@@ -32,6 +32,7 @@ import {
 import { rowFactories, useReport, useReportStore } from "@/lib/store";
 import {
   MANPOWER_PRESETS,
+  MATERIAL_UOM,
   WIZARD_STEPS,
   type Photo,
   type Report,
@@ -424,7 +425,23 @@ function MaterialsStep({
                     }
                   />
                 </Field>
-                <YesNo
+                <Field label="UOM">
+                  <Input
+                    value={row.uom ?? ""}
+                    list="uom-options"
+                    onChange={(e) =>
+                      patch({
+                        received: report.received.map((r) =>
+                          r.id === row.id ? { ...r, uom: e.target.value } : r,
+                        ),
+                      })
+                    }
+                    placeholder="EA, LF, TN…"
+                    autoCapitalize="characters"
+                  />
+                </Field>
+              </div>
+              <YesNo
                   label="BOL filed"
                   value={row.bolFiled}
                   onChange={(bolFiled) =>
@@ -435,7 +452,6 @@ function MaterialsStep({
                     })
                   }
                 />
-              </div>
             </div>
           )}
         />
@@ -454,8 +470,8 @@ function MaterialsStep({
             })
           }
           render={(row) => (
-            <div className="grid grid-cols-4 gap-3">
-              <Field label="Description" className="col-span-3">
+            <div className="flex flex-col gap-3">
+              <Field label="Description">
                 <Input
                   value={row.description}
                   onChange={(e) =>
@@ -468,23 +484,45 @@ function MaterialsStep({
                   placeholder="Spikes, plates, ballast…"
                 />
               </Field>
-              <Field label="QTY">
-                <Input
-                  inputMode="decimal"
-                  value={row.qty}
-                  onChange={(e) =>
-                    patch({
-                      consumed: report.consumed.map((r) =>
-                        r.id === row.id ? { ...r, qty: e.target.value } : r,
-                      ),
-                    })
-                  }
-                />
-              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="QTY">
+                  <Input
+                    inputMode="decimal"
+                    value={row.qty}
+                    onChange={(e) =>
+                      patch({
+                        consumed: report.consumed.map((r) =>
+                          r.id === row.id ? { ...r, qty: e.target.value } : r,
+                        ),
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="UOM">
+                  <Input
+                    value={row.uom ?? ""}
+                    list="uom-options"
+                    onChange={(e) =>
+                      patch({
+                        consumed: report.consumed.map((r) =>
+                          r.id === row.id ? { ...r, uom: e.target.value } : r,
+                        ),
+                      })
+                    }
+                    placeholder="EA, LF, TN…"
+                    autoCapitalize="characters"
+                  />
+                </Field>
+              </div>
             </div>
           )}
         />
       </SectionCard>
+      <datalist id="uom-options">
+        {MATERIAL_UOM.map((u) => (
+          <option key={u} value={u} />
+        ))}
+      </datalist>
     </>
   );
 }

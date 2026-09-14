@@ -8,11 +8,11 @@ export function formatReportText(report: Report): string {
   const yn = (v: string) => (v === "yes" ? "Yes" : v === "no" ? "No" : "—");
   const received = report.received
     .filter((r) => r.description.trim())
-    .map((r) => `  • ${r.description}  qty ${r.qty || "—"}  BOL ${yn(r.bolFiled)}`)
+    .map((r) => `  • ${r.description}  qty ${r.qty || "—"}${r.uom ? " " + r.uom : ""}  BOL ${yn(r.bolFiled)}`)
     .join("\n");
   const consumed = report.consumed
     .filter((r) => r.description.trim())
-    .map((r) => `  • ${r.description}  qty ${r.qty || "—"}`)
+    .map((r) => `  • ${r.description}  qty ${r.qty || "—"}${r.uom ? " " + r.uom : ""}`)
     .join("\n");
   const crew = report.manpower
     .filter((r) => r.className.trim())

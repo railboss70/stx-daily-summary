@@ -17,10 +17,10 @@ import {
 import { uid } from "@/lib/utils";
 
 function emptyReceived(): MaterialReceived {
-  return { id: uid(), description: "", qty: "", bolFiled: "" };
+  return { id: uid(), description: "", qty: "", uom: "", bolFiled: "" };
 }
 function emptyConsumed(): MaterialConsumed {
-  return { id: uid(), description: "", qty: "" };
+  return { id: uid(), description: "", qty: "", uom: "" };
 }
 function emptyManpower(): ManpowerRow {
   return { id: uid(), className: "", qty: "", hours: "" };
@@ -195,6 +195,11 @@ export const useReportStore = create<ReportState>()(
               pdfTitleCustom: Boolean(changed.pdfTitleCustom),
             };
           }
+          changed = {
+            ...changed,
+            received: changed.received.map((row) => ({ ...row, uom: row.uom ?? "" })),
+            consumed: changed.consumed.map((row) => ({ ...row, uom: row.uom ?? "" })),
+          };
           if (changed !== report) {
             nextReports[id] = changed;
             reportsChanged = true;

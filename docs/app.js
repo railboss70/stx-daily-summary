@@ -21,8 +21,8 @@ const formatLong = (iso) => {
   });
 };
 const emptyRow = {
-  received: () => ({ id: uid(), description: "", qty: "", bolFiled: "" }),
-  consumed: () => ({ id: uid(), description: "", qty: "" }),
+  received: () => ({ id: uid(), description: "", qty: "", uom: "", bolFiled: "" }),
+  consumed: () => ({ id: uid(), description: "", qty: "", uom: "" }),
   manpower: () => ({ id: uid(), className: "", qty: "", hours: "" }),
   sub: () => ({ id: uid(), description: "", hours: "", details: "" }),
 };
@@ -84,6 +84,8 @@ function load() {
   Object.values(store.reports).forEach((r) => {
     if ((r.recipientEmail || "").includes("stxrrailroad")) r.recipientEmail = DEFAULT_EMAIL;
     if (!Array.isArray(r.photos)) r.photos = [];
+    (r.received || []).forEach((row) => { if (row.uom == null) row.uom = ""; });
+    (r.consumed || []).forEach((row) => { if (row.uom == null) row.uom = ""; });
   });
   save();
 }
@@ -116,6 +118,10 @@ function markSvg() {
   return `<div class="logo-chip"><img src="./stx-logo.png" alt="STX Corporation" /></div>`;
 }
 
+
+function uomList() {
+  return `<datalist id="uom-options"><option value="EA"></option><option value="LF"></option><option value="TF"></option><option value="TN"></option><option value="CY"></option><option value="GAL"></option><option value="BAG"></option><option value="BDL"></option><option value="LB"></option><option value="SF"></option><option value="SY"></option></datalist>`;
+}
 function field(label, inner) {
   return `<label>${label}</label>${inner}`;
 }
@@ -174,6 +180,7 @@ function homeHtml() {
         ${field("Send reports to", `<input type="email" inputmode="email" data-set="defaultEmail" value="${esc(s.defaultEmail)}" placeholder="${DEFAULT_EMAIL}" />`)}
         <p class="hint">Office default is ${DEFAULT_EMAIL}</p>
       </div>
+      ${uomList()}
     </main>`;
 }
 
@@ -188,6 +195,7 @@ function wizardHtml() {
       <div class="muted" style="color:rgba(255,252,245,.75);margin-top:8px">${STEPS[step]} · ${step + 1} of ${STEPS.length}</div>
     </header>
     <main class="content">
+      ${uomList()}
       <div class="steps">${STEPS.map((_, i) => `<i class="${i <= step ? "on" : ""}"></i>`).join("")}</div>
       ${stepHtml(r)}
       <div class="nav">
@@ -322,12 +330,13 @@ function materialBlock(title, key, rows, bol) {
       <input data-row="${key}" data-id="${row.id}" data-f="description" value="${esc(row.description)}" placeholder="Description" />
       <div class="row">
         ${field("QTY", `<input inputmode="decimal" data-row="${key}" data-id="${row.id}" data-f="qty" value="${esc(row.qty)}" />`)}
-        ${bol ? field("BOL filed", `<select data-row="${key}" data-id="${row.id}" data-f="bolFiled">
+        ${field("UOM", `<input data-row="${key}" data-id="${row.id}" data-f="uom" value="${esc(row.uom || "")}" list="uom-options" placeholder="EA, LF, TN" autocapitalize="characters" />`)}
+      </div>
+      ${bol ? field("BOL filed", `<select data-row="${key}" data-id="${row.id}" data-f="bolFiled">
             <option value="" ${row.bolFiled === "" ? "selected" : ""}></option>
             <option value="yes" ${row.bolFiled === "yes" ? "selected" : ""}>Yes</option>
             <option value="no" ${row.bolFiled === "no" ? "selected" : ""}>No</option>
           </select>`) : ""}
-      </div>
     </div>`).join("")}
     <button class="btn btn-ghost" data-add="${key}">Add item</button>
   </div>`;
@@ -583,8 +592,8 @@ function setupSig(clear) {
 function yn(v) { return v === "yes" ? "YES" : v === "no" ? "NO" : "—"; }
 
 function reportText(r) {
-  const rec = r.received.filter((x) => x.description.trim()).map((x) => `  • ${x.description}  qty ${x.qty || "—"}  BOL ${yn(x.bolFiled)}`).join("\n");
-  const con = r.consumed.filter((x) => x.description.trim()).map((x) => `  • ${x.description}  qty ${x.qty || "—"}`).join("\n");
+  const rec = r.received.filter((x) => x.description.trim()).map((x) => `  • ${x.description}  qty ${x.qty || "—"}${x.uom ? " " + x.uom : ""}  BOL ${yn(x.bolFiled)}`).join("\n");
+  const con = r.consumed.filter((x) => x.description.trim()).map((x) => `  • ${x.description}  qty ${x.qty || "—"}${x.uom ? " " + x.uom : ""}`).join("\n");
   const crew = r.manpower.filter((x) => x.className.trim()).map((x) => `  • ${x.className}  qty ${x.qty || "—"}  hrs ${x.hours || "—"}`).join("\n");
   const subs = r.subcontractors.filter((x) => x.description.trim()).map((x) => `  • ${x.description}  hrs ${x.hours || "—"}${x.details ? "\n    " + x.details : ""}`).join("\n");
   return [
@@ -786,13 +795,13 @@ async function buildPdf(r) {
 
   const rec = (r.received || []).filter((x) => String(x.description || "").trim());
   section("Received and accounted materials");
-  tableHead(["Description", "QTY", "BOL filed"], [340, 80, 112]);
-  table(["Description", "QTY", "BOL"], rec.map((x) => [x.description, x.qty || "—", yn(x.bolFiled)]), [340, 80, 112]);
+  tableHead(["Description", "QTY", "UOM", "BOL filed"], [268, 64, 80, 120]);
+  table(["Description", "QTY", "UOM", "BOL"], rec.map((x) => [x.description, x.qty || "—", x.uom || "—", yn(x.bolFiled)]), [268, 64, 80, 120]);
 
   const con = (r.consumed || []).filter((x) => String(x.description || "").trim());
   section("Materials consumed");
-  tableHead(["Description", "QTY"], [420, 112]);
-  table(["Description", "QTY"], con.map((x) => [x.description, x.qty || "—"]), [420, 112]);
+  tableHead(["Description", "QTY", "UOM"], [348, 80, 104]);
+  table(["Description", "QTY", "UOM"], con.map((x) => [x.description, x.qty || "—", x.uom || "—"]), [348, 80, 104]);
 
   const crew = (r.manpower || []).filter((x) => String(x.className || "").trim());
   section("Manpower and equipment");

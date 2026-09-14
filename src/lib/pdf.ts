@@ -153,9 +153,9 @@ export async function buildReportPdf(report: Report, photos: Photo[]): Promise<B
     startY,
     colW,
     "Received and Accounted Materials",
-    ["Description", "QTY", "BOL"],
-    received.map((r) => [r.description, r.qty, yn(r.bolFiled)]),
-    [colW - 78, 36, 42],
+    ["Description", "QTY", "UOM", "BOL"],
+    received.map((r) => [r.description, r.qty, r.uom || "—", yn(r.bolFiled)]),
+    [colW - 122, 32, 40, 50],
   );
   const rightH = drawMaterialTable(
     doc,
@@ -163,9 +163,9 @@ export async function buildReportPdf(report: Report, photos: Photo[]): Promise<B
     startY,
     colW,
     "Materials Consumed",
-    ["Description", "QTY"],
-    consumed.map((r) => [r.description, r.qty]),
-    [colW - 44, 44],
+    ["Description", "QTY", "UOM"],
+    consumed.map((r) => [r.description, r.qty, r.uom || "—"]),
+    [colW - 84, 40, 44],
   );
   y = startY + Math.max(leftH, rightH) + 12;
 
