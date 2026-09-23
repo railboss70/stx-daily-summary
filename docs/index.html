@@ -62,6 +62,9 @@
     .yn button { border: 1.5px solid var(--line); background: var(--card); border-radius: 10px; padding: 12px; font-size: 15px; font-weight: 700; color: var(--ink); }
     .yn button.on { background: var(--navy); border-color: var(--navy); color: #fff; }
     .yn button.on-alert { background: var(--danger); border-color: var(--danger); color: #fff; }
+    .kind { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0 2px; }
+    .kind button { border: 1.5px solid var(--line); background: var(--card); border-radius: 8px; padding: 8px; font-size: 14px; font-weight: 700; color: var(--ink); }
+    .kind button.on { background: var(--navy); border-color: var(--navy); color: #fff; }
     .nav { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
     .steps { display: flex; gap: 4px; margin: 0 0 12px; }
     .steps button { flex: 1; border: 0; background: transparent; padding: 10px 0; }
@@ -95,6 +98,6 @@
       navigator.serviceWorker.register("./sw.js");
     }
   </script>
-  <script src="./app.js?v=7"></script>
+  <script src="./app.js?v=8"></script>
 </body>
 </html>

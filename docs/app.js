@@ -1,9 +1,7 @@
 const DEFAULT_EMAIL = "reports@stxrailroad.com";
-const PRESETS = [
-  "Foreman", "Laborer", "Operator", "Hi-Rail Operator", "Truck Driver",
-  "Welder", "Flagman", "Excavator", "Tamper", "Regulator", "Spike Driver",
-  "Loader", "Pickup",
-];
+const CREW_PRESETS = ["Foreman", "Laborer", "Operator", "Hi-Rail Operator", "Truck Driver", "Welder", "Flagman"];
+const EQUIP_PRESETS = ["Excavator", "Tamper", "Regulator", "Spike Driver", "Loader", "Pickup"];
+const PRESETS = CREW_PRESETS.concat(EQUIP_PRESETS);
 const WEATHER = ["Clear", "Partly Cloudy", "Cloudy", "Rain", "Storms", "Wind", "Fog", "Hot", "Cold", "Snow/Ice"];
 const STEPS = ["Job", "Work", "Materials", "Crew", "Closeout", "Photos", "Send"];
 const KEY = "stx-dps-pages-v1";
@@ -35,7 +33,7 @@ const formatTaken = (iso) => {
 const emptyRow = {
   received: () => ({ id: uid(), description: "", qty: "", uom: "", bolFiled: "" }),
   consumed: () => ({ id: uid(), description: "", qty: "", uom: "" }),
-  manpower: () => ({ id: uid(), className: "", qty: "", hours: "" }),
+  manpower: () => ({ id: uid(), className: "", qty: "", hours: "", kind: "crew" }),
   sub: () => ({ id: uid(), description: "", hours: "", details: "" }),
 };
 
@@ -160,6 +158,29 @@ function blobToDataUrl(blob) {
   });
 }
 
+function inferKind(name) {
+  const n = String(name || "").trim().toLowerCase();
+  if (EQUIP_PRESETS.some((p) => p.toLowerCase() === n)) return "equip";
+  return "crew";
+}
+
+function normalizeRecent(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  list.forEach((item) => {
+    if (typeof item === "string") {
+      const name = item.trim();
+      if (name) out.push({ name: name, kind: "crew" });
+      return;
+    }
+    if (!item || typeof item !== "object") return;
+    const name = String(item.name || "").trim();
+    if (!name) return;
+    out.push({ name: name, kind: item.kind === "equip" ? "equip" : "crew" });
+  });
+  return out;
+}
+
 function fillReport(r) {
   if (!Array.isArray(r.photos)) r.photos = [];
   if (!Array.isArray(r.received) || !r.received.length) r.received = [emptyRow.received()];
@@ -182,6 +203,9 @@ function fillReport(r) {
   if (!r.delaysYN && String(r.delays || "").trim()) r.delaysYN = "yes";
   r.received.forEach((row) => { if (row.uom == null) row.uom = ""; });
   r.consumed.forEach((row) => { if (row.uom == null) row.uom = ""; });
+  r.manpower.forEach((row) => {
+    if (row.kind !== "crew" && row.kind !== "equip") row.kind = inferKind(row.className);
+  });
   if ((r.recipientEmail || "").includes("stxrrailroad")) r.recipientEmail = DEFAULT_EMAIL;
 }
 
@@ -208,6 +232,7 @@ async function load() {
   if ((store.settings.defaultEmail || "").includes("stxrrailroad")) store.settings.defaultEmail = DEFAULT_EMAIL;
   if (!Array.isArray(store.settings.recentProjects)) store.settings.recentProjects = [];
   if (!Array.isArray(store.settings.recentClasses)) store.settings.recentClasses = [];
+  store.settings.recentClasses = normalizeRecent(store.settings.recentClasses);
   const reports = Object.values(store.reports);
   for (let i = 0; i < reports.length; i += 1) {
     const r = reports[i];
@@ -407,16 +432,17 @@ function stepHtml(r) {
       materialBlock("Materials consumed", "consumed", r.consumed, false);
   }
   if (step === 3) {
-    const rec = (store.settings.recentClasses || []).filter((c) => PRESETS.indexOf(c) < 0);
+    const rec = normalizeRecent(store.settings.recentClasses).filter((c) => !PRESETS.some((p) => p.toLowerCase() === c.name.toLowerCase()));
     return '<div class="card"><h2>Manpower and equipment</h2>' +
-      '<p class="hint">Tap a common class, or Other to write in any equipment or extra machines.</p>' +
+      '<p class="hint">Tap a class, or Other to write one in. Crew counts as man-hours. Equipment does not.</p>' +
       '<div class="chips">' +
-      PRESETS.map((n) => '<button type="button" class="chip" data-preset="' + esc(n) + '">' + esc(n) + "</button>").join("") +
-      rec.map((n) => '<button type="button" class="chip recent" data-preset="' + esc(n) + '">' + esc(n) + "</button>").join("") +
+      PRESETS.map((n) => '<button type="button" class="chip" data-preset="' + esc(n) + '" data-kind="' + inferKind(n) + '">' + esc(n) + "</button>").join("") +
+      rec.map((c) => '<button type="button" class="chip recent" data-preset="' + esc(c.name) + '" data-kind="' + (c.kind === "equip" ? "equip" : "crew") + '">' + esc(c.name) + "</button>").join("") +
       '<button type="button" class="chip other" data-act="other">Other</button></div>' +
       r.manpower.map((row) => '<div class="item"><div class="item-top"><span class="muted">Class / equipment</span>' +
         '<button class="btn btn-danger" style="width:auto;margin:0;padding:6px 10px;font-size:12px" data-rm="manpower" data-id="' + row.id + '">Remove</button></div>' +
         '<input data-row="manpower" data-id="' + row.id + '" data-f="className" value="' + esc(row.className) + '" placeholder="Write in any class or equipment" autocapitalize="words" />' +
+        kindToggle(row) +
         '<div class="row">' +
         field("QTY", '<input inputmode="decimal" data-row="manpower" data-id="' + row.id + '" data-f="qty" value="' + esc(row.qty) + '" />') +
         field("Hours", '<input inputmode="decimal" data-row="manpower" data-id="' + row.id + '" data-f="hours" value="' + esc(row.hours) + '" />') +
@@ -432,13 +458,13 @@ function stepHtml(r) {
       '<button class="btn btn-ghost" data-add="subcontractors">Add subcontractor</button></div>';
   }
   if (step === 4) {
-    return ynCard("Any incidents today?", "incidents", r.incidents, "incidentsExplain", r.incidentsExplain, true) +
-      ynCard("Any near misses today?", "nearMiss", r.nearMiss, "nearMissExplain", r.nearMissExplain, true) +
-      ynCard("Any equipment issues today?", "equipmentIssues", r.equipmentIssues, "equipmentIssuesExplain", r.equipmentIssuesExplain, true) +
+    return ynCard("Any incidents today?", "incidents", r.incidents, "incidentsExplain", r.incidentsExplain, "yes") +
+      ynCard("Any near misses today?", "nearMiss", r.nearMiss, "nearMissExplain", r.nearMissExplain, "yes") +
+      ynCard("Any equipment issues today?", "equipmentIssues", r.equipmentIssues, "equipmentIssuesExplain", r.equipmentIssuesExplain, "yes") +
       '<div class="card"><h2>Before leaving the site</h2>' +
-      ynRow("Site secure before leaving", "siteSecure", r.siteSecure) +
-      ynRow("Derails down", "derailsDown", r.derailsDown) +
-      ynRow("All locks removed", "locksRemoved", r.locksRemoved) +
+      ynRow("Site secure before leaving", "siteSecure", r.siteSecure, "no") +
+      ynRow("Derails down", "derailsDown", r.derailsDown, "no") +
+      ynRow("All locks removed", "locksRemoved", r.locksRemoved, "no") +
       "</div>";
   }
   if (step === 5) {
@@ -491,12 +517,18 @@ function ynCard(title, key, val, explainKey, explain, alertYes) {
   return '<div class="card"><h2>' + title + "</h2>" + ynRow("", key, val, alertYes) +
     (val === "yes" ? field("Explain", ta(explainKey, explain, "What happened")) : "") + "</div>";
 }
-function ynRow(label, key, val, alertYes) {
-  const yesOn = val === "yes" ? (alertYes ? "on-alert" : "on") : "";
-  const noOn = val === "no" ? "on" : "";
+function ynRow(label, key, val, alertOn) {
+  const yesOn = val === "yes" ? (alertOn === "yes" ? "on-alert" : "on") : "";
+  const noOn = val === "no" ? (alertOn === "no" ? "on-alert" : "on") : "";
   return (label ? "<label>" + label + "</label>" : "") + '<div class="yn">' +
     '<button type="button" data-yn="' + key + '" data-v="yes" class="' + yesOn + '">Yes</button>' +
     '<button type="button" data-yn="' + key + '" data-v="no" class="' + noOn + '">No</button></div>';
+}
+function kindToggle(row) {
+  const kind = row.kind === "equip" ? "equip" : "crew";
+  return '<div class="kind">' +
+    '<button type="button" data-kindrow="' + row.id + '" data-v="crew" class="' + (kind === "crew" ? "on" : "") + '">Crew</button>' +
+    '<button type="button" data-kindrow="' + row.id + '" data-v="equip" class="' + (kind === "equip" ? "on" : "") + '">Equipment</button></div>';
 }
 
 function materialBlock(title, key, rows, bol) {
@@ -595,7 +627,15 @@ function bind() {
     save();
     render();
   }));
-  document.querySelectorAll("[data-preset]").forEach((b) => b.addEventListener("click", () => addPreset(b.getAttribute("data-preset"))));
+  document.querySelectorAll("[data-preset]").forEach((b) => b.addEventListener("click", () => addPreset(b.getAttribute("data-preset"), b.getAttribute("data-kind"))));
+  document.querySelectorAll("[data-kindrow]").forEach((b) => b.addEventListener("click", () => {
+    const id = b.getAttribute("data-kindrow");
+    const kind = b.getAttribute("data-v") === "equip" ? "equip" : "crew";
+    const r = active();
+    r.manpower = r.manpower.map((row) => row.id === id ? { ...row, kind: kind } : row);
+    save();
+    render();
+  }));
   document.querySelectorAll("[data-proj]").forEach((b) => b.addEventListener("click", () => {
     patch({ projectNumber: b.getAttribute("data-proj") });
     render();
@@ -702,7 +742,7 @@ function start(fromLast, forceNew) {
       r.printName = last.printName || store.settings.defaultName;
       r.recipientEmail = last.recipientEmail || store.settings.defaultEmail;
       r.manpower = last.manpower.length
-        ? last.manpower.map((row) => ({ ...emptyRow.manpower(), className: row.className, qty: row.qty }))
+        ? last.manpower.map((row) => ({ ...emptyRow.manpower(), className: row.className, qty: row.qty, kind: row.kind === "equip" ? "equip" : "crew" }))
         : [emptyRow.manpower()];
     }
   }
@@ -740,11 +780,15 @@ async function removeReport(id) {
   render();
 }
 
-function addPreset(name) {
+function addPreset(name, kind) {
   const r = active();
+  if (!r) return;
+  const useKind = kind === "equip" ? "equip" : (kind === "crew" ? "crew" : inferKind(name));
   const blank = r.manpower.find((row) => !String(row.className || "").trim());
-  if (blank) blank.className = name;
-  else r.manpower.push({ ...emptyRow.manpower(), className: name });
+  if (blank) {
+    blank.className = name;
+    blank.kind = useKind;
+  } else r.manpower.push({ ...emptyRow.manpower(), className: name, kind: useKind });
   save();
   render();
 }
@@ -896,9 +940,11 @@ function setupSig(clear) {
 
 function yn(v) { return v === "yes" ? "YES" : v === "no" ? "NO" : "—"; }
 
-function manHours(rows) {
+function hoursOf(rows, kind) {
   let sum = 0;
   (rows || []).forEach((row) => {
+    if ((row.kind === "equip" ? "equip" : "crew") !== kind) return;
+    if (!String(row.className || "").trim()) return;
     const q = parseFloat(String(row.qty == null ? "" : row.qty).replace(/,/g, ""));
     const h = parseFloat(String(row.hours == null ? "" : row.hours).replace(/,/g, ""));
     if (Number.isFinite(q) && Number.isFinite(h)) sum += q * h;
@@ -906,11 +952,16 @@ function manHours(rows) {
   return Math.round(sum * 100) / 100;
 }
 
+function manHours(rows) {
+  return hoursOf(rows, "crew");
+}
+
 function reportText(r) {
   const rec = r.received.filter((x) => String(x.description || "").trim()).map((x) => "  • " + x.description + "  qty " + (x.qty || "—") + (x.uom ? " " + x.uom : "") + "  BOL " + yn(x.bolFiled)).join("\n");
   const con = r.consumed.filter((x) => String(x.description || "").trim()).map((x) => "  • " + x.description + "  qty " + (x.qty || "—") + (x.uom ? " " + x.uom : "")).join("\n");
-  const crewRows = r.manpower.filter((x) => String(x.className || "").trim());
-  const crew = crewRows.map((x) => "  • " + x.className + "  qty " + (x.qty || "—") + "  hrs " + (x.hours || "—")).join("\n");
+  const named = r.manpower.filter((x) => String(x.className || "").trim());
+  const ordered = named.filter((x) => x.kind !== "equip").concat(named.filter((x) => x.kind === "equip"));
+  const crew = ordered.map((x) => "  • " + x.className + " (" + (x.kind === "equip" ? "Equip" : "Crew") + ")  qty " + (x.qty || "—") + "  hrs " + (x.hours || "—")).join("\n");
   const subs = r.subcontractors.filter((x) => String(x.description || "").trim()).map((x) => "  • " + x.description + "  hrs " + (x.hours || "—") + (x.details ? "\n    " + x.details : "")).join("\n");
   const weather = (r.weather || []).join(", ") || "—";
   const delayLine = r.delaysYN === "yes"
@@ -929,7 +980,8 @@ function reportText(r) {
     "", "RECEIVED AND ACCOUNTED MATERIALS", rec || "  (none)",
     "", "MATERIALS CONSUMED", con || "  (none)",
     "", "MANPOWER AND EQUIPMENT", crew || "  (none)",
-    "Total man-hours: " + manHours(crewRows),
+    "Total man-hours (employees): " + manHours(ordered),
+    ordered.some((x) => x.kind === "equip") ? "Equipment hours: " + hoursOf(ordered, "equip") : "",
     "", "SUBCONTRACTORS", subs || "  (none)",
     "", "Any incidents today: " + yn(r.incidents), r.incidents === "yes" ? r.incidentsExplain : "",
     "Any near misses today: " + yn(r.nearMiss), r.nearMiss === "yes" ? r.nearMissExplain : "",
@@ -1201,25 +1253,37 @@ async function buildPdf(r) {
     [360, 80, 92]
   );
 
-  const crew = (r.manpower || []).filter((x) => String(x.className || "").trim());
+  const named = (r.manpower || []).filter((x) => String(x.className || "").trim());
+  const ordered = named.filter((x) => x.kind !== "equip").concat(named.filter((x) => x.kind === "equip"));
+  const crewWidths = [272, 60, 100, 100];
+  const crewHeads = ["Class / equipment", "Type", "QTY", "Hours"];
   drawTable(
     "Manpower and equipment",
-    ["Class / equipment", "QTY", "Hours"],
-    crew.map((x) => [x.className, x.qty || "—", x.hours || "—"]),
-    [332, 100, 100]
+    crewHeads,
+    ordered.map((x) => [x.className, x.kind === "equip" ? "Equip" : "Crew", x.qty || "—", x.hours || "—"]),
+    crewWidths
   );
-  if (crew.length) {
-    if (y + 16 > contentBottom) {
+  if (ordered.length) {
+    const equipRows = ordered.filter((x) => x.kind === "equip");
+    const totalLines = equipRows.length ? 2 : 1;
+    if (y + totalLines * 16 + 4 > contentBottom) {
       newPage();
       paintBar("Manpower and equipment", true);
-      paintHead(["Class / equipment", "QTY", "Hours"], [332, 100, 100]);
+      paintHead(crewHeads, crewWidths);
     }
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
     doc.setTextColor(INK[0], INK[1], INK[2]);
-    doc.text("Total man-hours", margin + 6, y + 12);
-    doc.text(String(manHours(crew)), margin + contentW - 6, y + 12, { align: "right" });
-    y += 18;
+    doc.text("Total man-hours (employees)", margin + 6, y + 12);
+    doc.text(String(manHours(ordered)), margin + contentW - 6, y + 12, { align: "right" });
+    y += 16;
+    if (equipRows.length) {
+      doc.setFont("helvetica", "normal");
+      doc.text("Equipment hours", margin + 6, y + 12);
+      doc.text(String(hoursOf(ordered, "equip")), margin + contentW - 6, y + 12, { align: "right" });
+      y += 16;
+    }
+    y += 4;
   }
 
   const subs = (r.subcontractors || []).filter((x) => String(x.description || "").trim());
@@ -1231,12 +1295,12 @@ async function buildPdf(r) {
   );
 
   const safety = [
-    ["Incidents", r.incidents, true],
-    ["Near misses", r.nearMiss, true],
-    ["Equipment issues", r.equipmentIssues, true],
-    ["Site secure", r.siteSecure, false],
-    ["Derails down", r.derailsDown, false],
-    ["Locks removed", r.locksRemoved, false],
+    ["Incidents", r.incidents, "yes"],
+    ["Near misses", r.nearMiss, "yes"],
+    ["Equipment issues", r.equipmentIssues, "yes"],
+    ["Site secure", r.siteSecure, "no"],
+    ["Derails down", r.derailsDown, "no"],
+    ["Locks removed", r.locksRemoved, "no"],
   ];
   const notes = [];
   if (r.incidents === "yes" && String(r.incidentsExplain || "").trim()) notes.push("Incidents: " + String(r.incidentsExplain).trim());
@@ -1265,7 +1329,7 @@ async function buildPdf(r) {
     doc.setTextColor(INK[0], INK[1], INK[2]);
     doc.text(item[0], x + 6, yy + 11);
     const value = yn(item[1]);
-    const alert = item[2] && item[1] === "yes";
+    const alert = item[2] && item[1] === item[2];
     doc.setFont("helvetica", "bold");
     if (alert) doc.setTextColor(RED[0], RED[1], RED[2]);
     doc.text(value, x + colW - 8, yy + 11, { align: "right" });
@@ -1512,8 +1576,15 @@ function sendReport() {
 }
 
 function rememberSettings(r) {
-  const custom = r.manpower.map((x) => String(x.className || "").trim()).filter((n) => n && PRESETS.indexOf(n) < 0);
-  store.settings.recentClasses = custom.concat((store.settings.recentClasses || []).filter((c) => custom.indexOf(c) < 0)).slice(0, 12);
+  const custom = [];
+  r.manpower.forEach((row) => {
+    const name = String(row.className || "").trim();
+    if (!name || PRESETS.some((p) => p.toLowerCase() === name.toLowerCase())) return;
+    const kind = row.kind === "equip" ? "equip" : "crew";
+    if (!custom.some((c) => c.name.toLowerCase() === name.toLowerCase())) custom.push({ name: name, kind: kind });
+  });
+  const prev = normalizeRecent(store.settings.recentClasses).filter((c) => !custom.some((n) => n.name.toLowerCase() === c.name.toLowerCase()));
+  store.settings.recentClasses = custom.concat(prev).slice(0, 12);
   const project = String(r.projectNumber || "").trim();
   if (project) store.settings.recentProjects = [project].concat(store.settings.recentProjects.filter((p) => p !== project)).slice(0, 8);
   store.settings.defaultName = String(r.printName || "").trim() || store.settings.defaultName;
