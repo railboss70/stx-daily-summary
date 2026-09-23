@@ -97,6 +97,9 @@ let askSent = false;
 let pendingDelete = null;
 let pendingTimer = null;
 let sigHandlers = null;
+let preparedFiles = null;
+let prepareToken = 0;
+let prepareTimer = null;
 let dbPromise = null;
 const thumbUrls = new Map();
 
@@ -236,7 +239,10 @@ async function load() {
     if (r.status !== "sent" || !r.sentAt) continue;
     const t = new Date(r.sentAt).getTime();
     if (!Number.isFinite(t) || t >= cutoff) continue;
+    if (!r.photos.length) continue;
     for (let p = 0; p < r.photos.length; p += 1) await deletePhoto(r.photos[p].id);
+    r.photos = [];
+    r.photosPurged = true;
   }
   save();
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
@@ -300,6 +306,10 @@ function teardownSig() {
   if (!sigHandlers) return;
   window.removeEventListener("pointerup", sigHandlers.end);
   window.removeEventListener("pointercancel", sigHandlers.end);
+  if (sigHandlers.canvas) {
+    sigHandlers.canvas.removeEventListener("pointerdown", sigHandlers.start);
+    sigHandlers.canvas.removeEventListener("pointermove", sigHandlers.move);
+  }
   sigHandlers = null;
 }
 
@@ -310,6 +320,7 @@ function render() {
   app.innerHTML = screen === "home" ? homeHtml() : wizardHtml();
   bind();
   hydratePhotos();
+  if (screen === "wizard" && step === 6) prepareSendFiles();
 }
 
 function homeHtml() {
@@ -358,7 +369,7 @@ function wizardHtml() {
     '<div class="nav"><button class="btn btn-ghost" data-act="' + (step === 0 ? "home" : "back") + '">' + (step === 0 ? "Home" : "Back") + "</button>" +
     (step < STEPS.length - 1
       ? '<button class="btn btn-navy" data-act="next">Next</button>'
-      : '<button class="btn btn-gold" data-act="send">Send report</button>') +
+      : '<button class="btn btn-gold" data-act="send" disabled>Preparing…</button>') +
     "</div></main>";
 }
 
@@ -421,9 +432,9 @@ function stepHtml(r) {
       '<button class="btn btn-ghost" data-add="subcontractors">Add subcontractor</button></div>';
   }
   if (step === 4) {
-    return ynCard("Any incidents today?", "incidents", r.incidents, "incidentsExplain", r.incidentsExplain) +
-      ynCard("Any near misses today?", "nearMiss", r.nearMiss, "nearMissExplain", r.nearMissExplain) +
-      ynCard("Any equipment issues today?", "equipmentIssues", r.equipmentIssues, "equipmentIssuesExplain", r.equipmentIssuesExplain) +
+    return ynCard("Any incidents today?", "incidents", r.incidents, "incidentsExplain", r.incidentsExplain, true) +
+      ynCard("Any near misses today?", "nearMiss", r.nearMiss, "nearMissExplain", r.nearMissExplain, true) +
+      ynCard("Any equipment issues today?", "equipmentIssues", r.equipmentIssues, "equipmentIssuesExplain", r.equipmentIssuesExplain, true) +
       '<div class="card"><h2>Before leaving the site</h2>' +
       ynRow("Site secure before leaving", "siteSecure", r.siteSecure) +
       ynRow("Derails down", "derailsDown", r.derailsDown) +
@@ -431,8 +442,11 @@ function stepHtml(r) {
       "</div>";
   }
   if (step === 5) {
+    const purgedNote = !!r.photosPurged && !(r.photos || []).length;
     return '<div class="card"><h2>Job photos</h2>' +
-      '<p class="hint">Add 3–4 photos. Take a new one or pick from your camera roll, then add a short note on each.</p>' +
+      (purgedNote
+        ? '<p class="hint">Photos removed from phone after 14 days (sent copy is on file).</p>'
+        : '<p class="hint">Add 3–4 photos. Take a new one or pick from your camera roll, then add a short note on each.</p>') +
       '<div class="nav" style="margin:0 0 12px">' +
       '<button class="btn btn-navy" data-act="photo" style="margin:0">Take photo</button>' +
       '<button class="btn btn-outline" data-act="library" style="margin:0">From library</button></div>' +
@@ -443,7 +457,7 @@ function stepHtml(r) {
         "<label>Photo " + (i + 1) + " notes</label>" +
         '<input data-caption="' + p.id + '" value="' + esc(p.caption || "") + '" placeholder="What does this show?" />' +
         '<button class="btn btn-danger" data-rmphoto="' + p.id + '">Remove</button></div>').join("") ||
-        '<p class="empty">No photos yet.</p>') +
+        (purgedNote ? "" : '<p class="empty">No photos yet.</p>')) +
       "</div>";
   }
   return '<div class="card"><h2>Sign and send</h2>' +
@@ -458,7 +472,7 @@ function stepHtml(r) {
     '<div class="card">' +
     '<p class="hint">Share the PDF (and photos) to Mail so it lands at the office. On iPhone use the Mail app, not a browser tab.</p>' +
     '<button class="btn btn-outline" data-act="preview">Preview PDF</button>' +
-    '<button class="btn btn-gold" data-act="send">Share PDF + photos</button>' +
+    '<button class="btn btn-gold" data-act="send" data-share="1" disabled>Preparing…</button>' +
     '<button class="btn btn-ghost" data-act="pdf">Download PDF only</button></div>' +
     (askSent
       ? '<div class="card"><h2>Did the email go out?</h2>' +
@@ -473,14 +487,16 @@ function recentChips() {
   if (!rec.length) return "";
   return '<div class="chips">' + rec.map((p) => '<button type="button" class="chip" data-proj="' + esc(p) + '">' + esc(p) + "</button>").join("") + "</div>";
 }
-function ynCard(title, key, val, explainKey, explain) {
-  return '<div class="card"><h2>' + title + "</h2>" + ynRow("", key, val) +
+function ynCard(title, key, val, explainKey, explain, alertYes) {
+  return '<div class="card"><h2>' + title + "</h2>" + ynRow("", key, val, alertYes) +
     (val === "yes" ? field("Explain", ta(explainKey, explain, "What happened")) : "") + "</div>";
 }
-function ynRow(label, key, val) {
+function ynRow(label, key, val, alertYes) {
+  const yesOn = val === "yes" ? (alertYes ? "on-alert" : "on") : "";
+  const noOn = val === "no" ? "on" : "";
   return (label ? "<label>" + label + "</label>" : "") + '<div class="yn">' +
-    '<button type="button" data-yn="' + key + '" data-v="yes" class="' + (val === "yes" ? "on-yes" : "") + '">Yes</button>' +
-    '<button type="button" data-yn="' + key + '" data-v="no" class="' + (val === "no" ? "on-no" : "") + '">No</button></div>';
+    '<button type="button" data-yn="' + key + '" data-v="yes" class="' + yesOn + '">Yes</button>' +
+    '<button type="button" data-yn="' + key + '" data-v="no" class="' + noOn + '">No</button></div>';
 }
 
 function materialBlock(title, key, rows, bol) {
@@ -541,6 +557,7 @@ function bind() {
     if (r && !r.pdfTitleCustom && (k === "date" || k === "projectNumber" || k === "printName")) {
       patch({ pdfTitle: autoTitle(r) });
     }
+    if (step === 6 && (k === "pdfTitle" || k === "printName")) queuePrepare();
   }));
   document.querySelectorAll("[data-caption]").forEach((el) => el.addEventListener("input", () => {
     const id = el.getAttribute("data-caption");
@@ -642,6 +659,7 @@ function onAct(e) {
   if (act === "clearsig") {
     patch({ signatureDataUrl: "" });
     setupSig(true);
+    prepareSendFiles();
   }
   if (act === "pdf") downloadPdf();
   if (act === "preview") previewPdf();
@@ -774,6 +792,7 @@ async function onPhoto(e) {
       await putPhoto(id, blob);
       const takenAt = file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString();
       r.photos.push({ id: id, caption: "", takenAt: takenAt });
+      r.photosPurged = false;
     } catch (err) {
       toast("Could not add that photo.");
     }
@@ -866,12 +885,13 @@ function setupSig(clear) {
       ctx.fill();
     }
     patch({ signatureDataUrl: canvas.toDataURL("image/png") });
+    prepareSendFiles();
   };
   canvas.addEventListener("pointerdown", start);
   canvas.addEventListener("pointermove", move);
   window.addEventListener("pointerup", end);
   window.addEventListener("pointercancel", end);
-  sigHandlers = { start: start, move: move, end: end };
+  sigHandlers = { canvas: canvas, start: start, move: move, end: end };
 }
 
 function yn(v) { return v === "yes" ? "YES" : v === "no" ? "NO" : "—"; }
@@ -917,7 +937,9 @@ function reportText(r) {
     "Site secure before leaving: " + yn(r.siteSecure),
     "Derails down: " + yn(r.derailsDown),
     "All locks removed: " + yn(r.locksRemoved),
-    "", "Job photos: " + r.photos.length,
+    "", r.photosPurged
+      ? "Photos removed from phone after 14 days (sent copy is on file)."
+      : "Job photos: " + r.photos.length,
     "", "Print name: " + (r.printName || "—"),
   ].filter((x) => x !== "").join("\n");
 }
@@ -982,7 +1004,7 @@ function placeFitted(doc, dataUrl, boxX, boxY, boxW, boxH) {
   const w = iw * scale;
   const h = ih * scale;
   const x = boxX + (boxW - w) / 2;
-  const y = boxY + (boxH - h) / 2;
+  const y = boxY;
   let fmt = String(props.fileType || "JPEG").toUpperCase();
   if (fmt === "JPG") fmt = "JPEG";
   if (fmt !== "PNG" && fmt !== "JPEG") fmt = "JPEG";
@@ -1263,7 +1285,7 @@ async function buildPdf(r) {
   doc.setTextColor(INK[0], INK[1], INK[2]);
   doc.text(r.printName || " ", margin, top + 30);
   if (r.signatureDataUrl) {
-    try { doc.addImage(r.signatureDataUrl, "PNG", margin + 240, top, 170, 34); } catch (e) {}
+    try { doc.addImage(r.signatureDataUrl, "PNG", margin + 240, top, 170, 34, undefined, "FAST"); } catch (e) {}
   }
   doc.setFont("helvetica", "bold");
   doc.setFontSize(8);
@@ -1272,11 +1294,24 @@ async function buildPdf(r) {
   doc.text("SIGNATURE", margin + 240, top + 48);
   y = top + blockH;
 
+  if (r.photosPurged && !(r.photos || []).length) {
+    const note = "Photos removed from phone after 14 days (sent copy is on file).";
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    const noteLines = doc.splitTextToSize(note, contentW);
+    if (y + noteLines.length * 12 + 4 > contentBottom) newPage();
+    doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
+    doc.text(noteLines, margin, y + 11);
+    y += noteLines.length * 12 + 4;
+  }
+
   const photos = [];
   const srcPhotos = r.photos || [];
   for (let i = 0; i < srcPhotos.length; i += 1) {
     const p = srcPhotos[i];
-    photos.push({ caption: p.caption || "", takenAt: p.takenAt || "", dataUrl: await resolvePhoto(p) });
+    const dataUrl = await resolvePhoto(p);
+    if (!dataUrl) continue;
+    photos.push({ caption: p.caption || "", takenAt: p.takenAt || "", dataUrl: dataUrl });
   }
   photos.forEach((p, i) => {
     doc.addPage();
@@ -1338,7 +1373,9 @@ async function downloadPdf() {
   const r = active();
   if (!r) return;
   if (!window.jspdf) { toast("PDF library still loading — try again."); return; }
-  downloadBlob(await buildPdf(r), fileName(r));
+  const pack = preparedFiles;
+  const blob = packMatches(pack, r) ? pack.blob : await buildPdf(r);
+  downloadBlob(blob, fileName(r));
   toast("PDF saved.");
 }
 
@@ -1346,13 +1383,132 @@ async function previewPdf() {
   const r = active();
   if (!r) return;
   if (!window.jspdf) { toast("PDF library still loading — try again."); return; }
-  const blob = await buildPdf(r);
-  const url = URL.createObjectURL(blob);
-  const opened = window.open(url, "_blank");
-  if (!opened) {
-    downloadBlob(blob, fileName(r));
-    toast("Preview blocked. PDF downloaded instead.");
+  const w = window.open("", "_blank");
+  try {
+    const pack = preparedFiles;
+    const blob = packMatches(pack, r) ? pack.blob : await buildPdf(r);
+    const url = URL.createObjectURL(blob);
+    if (w) w.location = url;
+    else {
+      downloadBlob(blob, fileName(r));
+      toast("Preview blocked. PDF downloaded instead.");
+    }
+  } catch (err) {
+    if (w && w.close) w.close();
+    toast("Could not build the PDF.");
   }
+}
+
+function packMatches(pack, r) {
+  if (!pack || !pack.ready || !pack.blob || !r) return false;
+  return pack.id === r.id
+    && pack.sig === (r.signatureDataUrl || "")
+    && pack.title === String(r.pdfTitle || "")
+    && pack.name === String(r.printName || "");
+}
+
+function setShareBusy(busy) {
+  document.querySelectorAll('[data-act="send"]').forEach((b) => {
+    b.disabled = !!busy;
+    b.textContent = busy ? "Preparing…" : (b.getAttribute("data-share") === "1" ? "Share PDF + photos" : "Send report");
+  });
+}
+
+function queuePrepare() {
+  clearTimeout(prepareTimer);
+  prepareToken += 1;
+  if (preparedFiles) preparedFiles.ready = false;
+  setShareBusy(true);
+  prepareTimer = setTimeout(() => { prepareSendFiles(); }, 300);
+}
+
+async function prepareSendFiles() {
+  const r = active();
+  if (!r || screen !== "wizard" || step !== 6) return;
+  const token = ++prepareToken;
+  const sig = r.signatureDataUrl || "";
+  const title = String(r.pdfTitle || "");
+  const name = String(r.printName || "");
+  preparedFiles = { id: r.id, sig: sig, title: title, name: name, token: token, ready: false, blob: null, pdfFile: null, photoFiles: [] };
+  setShareBusy(true);
+  try {
+    if (!window.jspdf) throw new Error("pdf");
+    const blob = await buildPdf(r);
+    if (token !== prepareToken) return;
+    const live = active();
+    if (!live || live.id !== r.id || screen !== "wizard" || step !== 6) return;
+    if ((live.signatureDataUrl || "") !== sig || String(live.pdfTitle || "") !== title || String(live.printName || "") !== name) return;
+    const pdfFile = new File([blob], fileName(live), { type: "application/pdf" });
+    const photoFiles = [];
+    const list = live.photos || [];
+    for (let i = 0; i < list.length; i += 1) {
+      if (token !== prepareToken) return;
+      let b = null;
+      try { b = await getPhoto(list[i].id); } catch (e) { b = null; }
+      if (token !== prepareToken) return;
+      if (b) photoFiles.push(new File([b], "job-photo-" + (i + 1) + ".jpg", { type: b.type || "image/jpeg" }));
+    }
+    if (token !== prepareToken) return;
+    const now = active();
+    if (!now || (now.signatureDataUrl || "") !== sig) return;
+    preparedFiles = { id: live.id, sig: sig, title: title, name: name, token: token, ready: true, blob: blob, pdfFile: pdfFile, photoFiles: photoFiles };
+    setShareBusy(false);
+  } catch (err) {
+    if (token !== prepareToken) return;
+    preparedFiles = { id: r.id, sig: sig, title: title, name: name, token: token, ready: false, blob: null, pdfFile: null, photoFiles: [] };
+    setShareBusy(false);
+  }
+}
+
+function mailFallback(r, blob, email) {
+  downloadBlob(blob, fileName(r));
+  const subject = encodeURIComponent("Daily Project Summary — " + (r.projectNumber || "Project") + " — " + r.date);
+  const body = encodeURIComponent(reportText(r) + "\n\n---\nAttach the downloaded PDF and job photos before sending.");
+  window.location.href = "mailto:" + encodeURIComponent(email) + "?subject=" + subject + "&body=" + body;
+  askSent = true;
+  render();
+}
+
+function sendReport() {
+  const r = active();
+  const email = String((r && r.recipientEmail) || DEFAULT_EMAIL).trim();
+  const copyP = navigator.clipboard && navigator.clipboard.writeText
+    ? navigator.clipboard.writeText(email).then(() => true, () => false)
+    : Promise.resolve(false);
+  if (!r) return;
+  if (!String(r.printName || "").trim() || !r.signatureDataUrl) {
+    toast("Print name and signature are required.");
+    return;
+  }
+  if (!window.jspdf) { toast("PDF library still loading — try again."); return; }
+  const pack = preparedFiles;
+  if (!packMatches(pack, r)) {
+    toast("Still preparing the PDF.");
+    prepareSendFiles();
+    return;
+  }
+  rememberSettings(r);
+  save();
+  copyP.then((ok) => { if (ok) toast("Office email copied. Paste it in To."); });
+  const files = [pack.pdfFile].concat(pack.photoFiles || []);
+  const payload = {
+    title: "Daily Project Summary — " + (r.projectNumber || "Project") + " — " + r.date,
+    text: "Daily Project Summary for project " + (r.projectNumber || "—") + " on " + r.date + ". Please send to " + email + ".",
+    files: files,
+  };
+  try {
+    if (navigator.share && navigator.canShare && navigator.canShare(payload)) {
+      navigator.share(payload).then(() => {
+        askSent = true;
+        render();
+      }).catch((err) => {
+        if (err && err.name === "AbortError") return;
+        mailFallback(r, pack.blob, email);
+      });
+      return;
+    }
+  } catch (err) {}
+  mailFallback(r, pack.blob, email);
 }
 
 function rememberSettings(r) {
@@ -1376,50 +1532,6 @@ function markSent() {
   screen = "home";
   activeId = null;
   step = 0;
-  render();
-}
-
-async function sendReport() {
-  const r = active();
-  if (!r) return;
-  if (!String(r.printName || "").trim() || !r.signatureDataUrl) {
-    toast("Print name and signature are required.");
-    return;
-  }
-  if (!window.jspdf) { toast("PDF library still loading — try again."); return; }
-  const email = String(r.recipientEmail || DEFAULT_EMAIL).trim();
-  const pdf = await buildPdf(r);
-  const pdfFile = new File([pdf], fileName(r), { type: "application/pdf" });
-  const photoFiles = [];
-  for (let i = 0; i < r.photos.length; i += 1) {
-    const blob = await getPhoto(r.photos[i].id);
-    if (blob) photoFiles.push(new File([blob], "job-photo-" + (i + 1) + ".jpg", { type: blob.type || "image/jpeg" }));
-  }
-  rememberSettings(r);
-  save();
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(email).catch(() => {});
-  } catch (e) {}
-  toast("Office email copied. Paste it in To.");
-  try {
-    if (navigator.share && navigator.canShare && navigator.canShare({ files: [pdfFile].concat(photoFiles) })) {
-      await navigator.share({
-        title: "Daily Project Summary — " + (r.projectNumber || "Project") + " — " + r.date,
-        text: "Daily Project Summary for project " + (r.projectNumber || "—") + " on " + r.date + ". Please send to " + email + ".",
-        files: [pdfFile].concat(photoFiles),
-      });
-      askSent = true;
-      render();
-      return;
-    }
-  } catch (err) {
-    if (err && err.name === "AbortError") return;
-  }
-  downloadBlob(pdf, fileName(r));
-  const subject = encodeURIComponent("Daily Project Summary — " + (r.projectNumber || "Project") + " — " + r.date);
-  const body = encodeURIComponent(reportText(r) + "\n\n---\nAttach the downloaded PDF and job photos before sending.");
-  window.location.href = "mailto:" + encodeURIComponent(email) + "?subject=" + subject + "&body=" + body;
-  askSent = true;
   render();
 }
 

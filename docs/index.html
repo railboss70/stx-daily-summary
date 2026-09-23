@@ -50,6 +50,7 @@
     .btn-ghost { background: #e8e2d4; color: var(--navy); }
     .btn-danger { background: #f3e0e0; color: var(--danger); }
     .btn-outline { background: var(--card); color: var(--navy); border: 1.5px solid var(--navy); }
+    .btn:disabled { opacity: .55; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
     .chip { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 9px 12px; font-size: 14px; }
@@ -59,8 +60,8 @@
     .item-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
     .yn { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .yn button { border: 1.5px solid var(--line); background: var(--card); border-radius: 10px; padding: 12px; font-size: 15px; font-weight: 700; color: var(--ink); }
-    .yn button.on-yes { background: var(--ok); border-color: var(--ok); color: #fff; }
-    .yn button.on-no { background: var(--danger); border-color: var(--danger); color: #fff; }
+    .yn button.on { background: var(--navy); border-color: var(--navy); color: #fff; }
+    .yn button.on-alert { background: var(--danger); border-color: var(--danger); color: #fff; }
     .nav { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
     .steps { display: flex; gap: 4px; margin: 0 0 12px; }
     .steps button { flex: 1; border: 0; background: transparent; padding: 10px 0; }
@@ -94,6 +95,6 @@
       navigator.serviceWorker.register("./sw.js");
     }
   </script>
-  <script src="./app.js?v=6"></script>
+  <script src="./app.js?v=7"></script>
 </body>
 </html>
