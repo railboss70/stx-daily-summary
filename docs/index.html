@@ -52,6 +52,17 @@
     .btn-outline { background: var(--card); color: var(--navy); border: 1.5px solid var(--navy); }
     .btn:disabled { opacity: .55; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .row.loc { grid-template-columns: 1fr 92px; }
+    .wx-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-top: 8px; }
+    .wx-col { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 8px 4px 10px; text-align: center; min-width: 0; }
+    .wx-time { font-size: 12px; font-weight: 800; letter-spacing: .04em; color: var(--muted); }
+    .wx-ico { width: 40px; height: 40px; display: block; margin: 4px auto; }
+    .wx-temp { font-size: 26px; font-weight: 800; color: var(--navy); line-height: 1; }
+    .wx-cond { font-size: 12px; font-weight: 800; color: var(--navy); margin: 4px 0; line-height: 1.2; }
+    .wx-meta { font-size: 11px; color: var(--muted); line-height: 1.35; }
+    .wx-src { font-size: 11px; color: var(--muted); margin: 8px 0 4px; line-height: 1.35; }
+    .spin { width: 16px; height: 16px; border: 2px solid #d9d3c4; border-top-color: var(--navy); border-radius: 50%; animation: stx-spin .7s linear infinite; display: inline-block; }
+    @keyframes stx-spin { to { transform: rotate(360deg); } }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
     .chip { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 9px 12px; font-size: 14px; }
     .chip.other { border: 1.5px dashed var(--navy); color: var(--navy); font-weight: 700; }
@@ -98,6 +109,6 @@
       navigator.serviceWorker.register("./sw.js");
     }
   </script>
-  <script src="./app.js?v=8"></script>
+  <script src="./app.js?v=9"></script>
 </body>
 </html>

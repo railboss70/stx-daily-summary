@@ -44,6 +44,7 @@ function freshSettings() {
     lastProject: "",
     recentProjects: [],
     recentClasses: [],
+    projectLocations: {},
   };
 }
 
@@ -63,6 +64,9 @@ function blankReport(settings) {
     tempF: "",
     weatherImpact: "",
     weatherImpactExplain: "",
+    jobCity: ((s.projectLocations || {})[s.lastProject] || {}).city || "",
+    jobState: ((s.projectLocations || {})[s.lastProject] || {}).state || "",
+    wx: null,
     delaysYN: "",
     delayHours: "",
     delays: "",
@@ -98,6 +102,16 @@ let sigHandlers = null;
 let preparedFiles = null;
 let prepareToken = 0;
 let prepareTimer = null;
+let wxLoading = false;
+let wxError = "";
+let wxManualOpen = false;
+let wxBusy = false;
+let wxTimer = null;
+let wxToken = 0;
+let wxQueued = false;
+let wxFailAt = 0;
+let wxFailKey = "";
+let placesPromise = null;
 let dbPromise = null;
 const thumbUrls = new Map();
 
@@ -191,6 +205,9 @@ function fillReport(r) {
   if (r.tempF == null) r.tempF = "";
   if (r.weatherImpact == null) r.weatherImpact = "";
   if (r.weatherImpactExplain == null) r.weatherImpactExplain = "";
+  if (r.jobCity == null) r.jobCity = "";
+  r.jobState = String(r.jobState == null ? "" : r.jobState).replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase();
+  if (!r.wx || typeof r.wx !== "object") r.wx = null;
   if (r.delaysYN == null) r.delaysYN = "";
   if (r.delayHours == null) r.delayHours = "";
   if (r.delays == null) r.delays = "";
@@ -233,6 +250,7 @@ async function load() {
   if (!Array.isArray(store.settings.recentProjects)) store.settings.recentProjects = [];
   if (!Array.isArray(store.settings.recentClasses)) store.settings.recentClasses = [];
   store.settings.recentClasses = normalizeRecent(store.settings.recentClasses);
+  if (!store.settings.projectLocations || typeof store.settings.projectLocations !== "object") store.settings.projectLocations = {};
   const reports = Object.values(store.reports);
   for (let i = 0; i < reports.length; i += 1) {
     const r = reports[i];
@@ -339,12 +357,34 @@ function teardownSig() {
 }
 
 function render() {
+  let focusSel = "";
+  let caret = null;
+  const prev = document.activeElement;
+  if (prev && prev.getAttribute) {
+    const k = prev.getAttribute("data-k");
+    const row = prev.getAttribute("data-row");
+    const f = prev.getAttribute("data-f");
+    const id = prev.getAttribute("data-id");
+    if (k) focusSel = '[data-k="' + k + '"]';
+    else if (row && f && id) focusSel = '[data-row="' + row + '"][data-id="' + id + '"][data-f="' + f + '"]';
+    if (focusSel && typeof prev.selectionStart === "number") caret = prev.selectionStart;
+  }
   teardownSig();
   const app = document.getElementById("app");
   if (!app) return;
   app.innerHTML = screen === "home" ? homeHtml() : wizardHtml();
   bind();
+  if (focusSel && document.querySelector) {
+    const next = document.querySelector(focusSel);
+    if (next && next.focus) {
+      try {
+        next.focus();
+        if (caret != null && next.setSelectionRange) next.setSelectionRange(caret, caret);
+      } catch (e) {}
+    }
+  }
   hydratePhotos();
+  if (screen === "wizard" && (step === 1 || step === 6)) maybeAutoWeather();
   if (screen === "wizard" && step === 6) prepareSendFiles();
 }
 
@@ -398,6 +438,431 @@ function wizardHtml() {
     "</div></main>";
 }
 
+const SLOT_TIMES = [
+  { hour: 7, minute: 0, t: "7 AM" },
+  { hour: 12, minute: 0, t: "12 PM" },
+  { hour: 17, minute: 0, t: "5 PM" },
+];
+const PLACE_SUFFIXES = [" city and borough", " metropolitan government", " unified government", " consolidated government", " urban county", " municipality", " city", " town", " village", " cdp", " borough"];
+
+function cleanPlaceName(name) {
+  let n = String(name || "").trim().replace(/\s+/g, " ");
+  const low = n.toLowerCase();
+  for (let i = 0; i < PLACE_SUFFIXES.length; i += 1) {
+    const s = PLACE_SUFFIXES[i];
+    if (low.endsWith(s)) return n.slice(0, n.length - s.length).trim();
+  }
+  return n;
+}
+
+function placeKey(r) {
+  return cleanPlaceName(r.jobCity || "").toLowerCase() + "|" + String(r.jobState || "").trim().toLowerCase() + "|" + (r.date || "");
+}
+
+function weatherDateOk(dateStr) {
+  if (!dateStr) return false;
+  const a = Date.parse(dateStr + "T12:00:00");
+  const b = Date.parse(todayISO() + "T12:00:00");
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  const diff = Math.round((b - a) / 86400000);
+  return diff >= 0 && diff <= 7;
+}
+
+function wxReady(r) {
+  if (!r || !r.wx || r.wx.placeKey !== placeKey(r) || !weatherDateOk(r.date)) return false;
+  return Array.isArray(r.wx.slots) && r.wx.slots.some((s) => s && (s.status === "ok" || s.status === "later" || s.status === "miss"));
+}
+
+function weatherFresh(r) {
+  if (!wxReady(r) || !r.wx.fetchedAt) return false;
+  const age = Date.now() - new Date(r.wx.fetchedAt).getTime();
+  if (!Number.isFinite(age)) return false;
+  const incomplete = r.wx.slots.some((s) => !s || s.status !== "ok");
+  if (!incomplete) return true;
+  if (step === 6) return age < 60 * 1000;
+  return age < 3 * 60 * 1000;
+}
+
+function loadPlaces() {
+  if (!placesPromise) {
+    placesPromise = fetch("./us-places.json").then((res) => {
+      if (!res.ok) throw new Error("places");
+      return res.json();
+    }).catch((err) => {
+      placesPromise = null;
+      throw err;
+    });
+  }
+  return placesPromise;
+}
+
+function findPlace(list, city, state) {
+  const name = cleanPlaceName(city).toLowerCase();
+  const st = String(state || "").trim().toUpperCase();
+  if (!name || st.length !== 2 || !Array.isArray(list)) return null;
+  let best = null;
+  for (let i = 0; i < list.length; i += 1) {
+    const row = list[i];
+    if (!row || row[1] !== st || String(row[0]).toLowerCase() !== name) continue;
+    if (!best || (row[4] || 0) > (best[4] || 0)) best = row;
+  }
+  return best;
+}
+
+function fetchJson(url) {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = setTimeout(() => { if (ctrl) ctrl.abort(); }, 10000);
+  return fetch(url, {
+    signal: ctrl ? ctrl.signal : undefined,
+    cache: "no-store",
+    headers: { Accept: "application/geo+json" },
+  }).then((res) => {
+    if (!res.ok) throw new Error("http");
+    return res.json();
+  }).finally(() => clearTimeout(timer));
+}
+
+function zoneParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timeZone, hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).formatToParts(date);
+  const g = (type) => Number(parts.find((p) => p.type === type).value);
+  let hour = g("hour");
+  if (hour === 24) hour = 0;
+  return { year: g("year"), month: g("month"), day: g("day"), hour: hour, minute: g("minute") };
+}
+
+function zonedTime(dateStr, hour, minute, timeZone) {
+  const bits = String(dateStr).split("-").map(Number);
+  const y = bits[0];
+  const mo = bits[1];
+  const d = bits[2];
+  let utc = Date.UTC(y, mo - 1, d, hour, minute);
+  for (let i = 0; i < 4; i += 1) {
+    const p = zoneParts(new Date(utc), timeZone);
+    const got = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
+    const want = Date.UTC(y, mo - 1, d, hour, minute);
+    if (got === want) break;
+    utc += want - got;
+  }
+  return utc;
+}
+
+function todayInZone(timeZone) {
+  const p = zoneParts(new Date(), timeZone);
+  const z = (n) => String(n).padStart(2, "0");
+  return p.year + "-" + z(p.month) + "-" + z(p.day);
+}
+
+function slotIsFuture(dateStr, hour, minute, timeZone) {
+  if (dateStr !== todayInZone(timeZone)) return false;
+  return zonedTime(dateStr, hour, minute, timeZone) > Date.now();
+}
+
+function numVal(obj) {
+  if (obj == null) return null;
+  const v = typeof obj === "number" ? obj : obj.value;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function compassDir(deg) {
+  if (deg == null || !Number.isFinite(Number(deg))) return "";
+  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  const i = Math.round((((Number(deg) % 360) + 360) % 360) / 45) % 8;
+  return dirs[i];
+}
+
+function iconKind(url) {
+  const m = String(url || "").match(/\/(day|night)\/([^?]+)/);
+  if (!m) return "cloud";
+  const day = m[1] !== "night";
+  const parts = m[2].split("/").map((part) => part.split(",")[0].replace(/^wind_/, ""));
+  const severe = (code) => {
+    if (code === "tsra" || code === "tsra_sct" || code === "tsra_hi") return "storm";
+    if (code === "rain" || code === "rain_showers" || code === "rain_showers_hi") return "rain";
+    if (code === "snow" || code === "sleet" || code === "fzra" || code === "rain_snow") return "snow";
+    if (code === "fog" || code === "haze" || code === "smoke" || code === "dust") return "fog";
+    return "";
+  };
+  for (let i = 0; i < parts.length; i += 1) {
+    const hit = severe(parts[i]);
+    if (hit) return hit;
+  }
+  const code = parts[0] || "";
+  if (code === "skc" || code === "few") return day ? "sun" : "moon";
+  if (code === "sct" || code === "bkn") return day ? "partly-day" : "partly-night";
+  if (code === "ovc") return "cloud";
+  return "cloud";
+}
+
+function closestObs(features, targetMs) {
+  let best = null;
+  let bestDt = Infinity;
+  (features || []).forEach((f) => {
+    const ts = Date.parse(f && f.properties && f.properties.timestamp);
+    if (!Number.isFinite(ts)) return;
+    const dt = Math.abs(ts - targetMs);
+    if (dt < bestDt) { bestDt = dt; best = f; }
+  });
+  if (!best || bestDt > 45 * 60 * 1000) return null;
+  return best;
+}
+
+function blankSlot(t, status, cond) {
+  return { t: t, status: status, icon: "", cond: cond, tempF: "", precip: "", wind: "", hum: "", obsTime: "" };
+}
+
+function buildSlot(target, dateStr, tz, features) {
+  if (slotIsFuture(dateStr, target.hour, target.minute, tz)) return blankSlot(target.t, "later", "Later today.");
+  const obs = closestObs(features, zonedTime(dateStr, target.hour, target.minute, tz));
+  if (!obs) return blankSlot(target.t, "miss", "No reading.");
+  const p = obs.properties || {};
+  const tempC = numVal(p.temperature);
+  const windK = numVal(p.windSpeed);
+  const windDir = numVal(p.windDirection);
+  const hum = numVal(p.relativeHumidity);
+  const precipMm = numVal(p.precipitationLastHour);
+  const mph = windK == null ? null : Math.round(windK * 0.621371);
+  let wind = "—";
+  if (mph != null) wind = mph <= 0 ? "0 mph" : ((compassDir(windDir) ? compassDir(windDir) + " " : "") + mph + " mph");
+  return {
+    t: target.t,
+    status: "ok",
+    icon: iconKind(p.icon),
+    cond: p.textDescription || "",
+    tempF: tempC == null ? "" : String(Math.round(tempC * 9 / 5 + 32)),
+    precip: precipMm == null ? "—" : (precipMm / 25.4).toFixed(2) + " in",
+    wind: wind,
+    hum: hum == null ? "—" : String(Math.round(hum)) + "%",
+    obsTime: p.timestamp || "",
+  };
+}
+
+function maybeAutoWeather() {
+  if (wxBusy || wxQueued) return;
+  const r = active();
+  if (!r || !weatherDateOk(r.date)) return;
+  if (!String(r.jobCity || "").trim() || String(r.jobState || "").trim().length < 2) return;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+  if (weatherFresh(r)) return;
+  const key = placeKey(r);
+  const wait = step === 6 ? 20000 : 120000;
+  if (wxFailKey === key && wxFailAt && Date.now() - wxFailAt < wait) return;
+  wxQueued = true;
+  setTimeout(() => {
+    wxQueued = false;
+    if (screen !== "wizard" || (step !== 1 && step !== 6)) return;
+    fetchWeather(false);
+  }, 40);
+}
+
+function scheduleWeather() {
+  clearTimeout(wxTimer);
+  wxTimer = setTimeout(() => { fetchWeather(false); }, 450);
+}
+
+async function fetchWeather(force) {
+  const r = active();
+  if (!r) return;
+  if (wxBusy && !force) return;
+  if (!weatherDateOk(r.date)) return;
+  const city = String(r.jobCity || "").trim();
+  const state = String(r.jobState || "").trim().toUpperCase();
+  if (!city || state.length !== 2) return;
+  if (!force && weatherFresh(r)) return;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    wxError = "Weather unavailable. No signal.";
+    wxManualOpen = true;
+    wxLoading = false;
+    wxFailKey = placeKey(r);
+    wxFailAt = Date.now();
+    render();
+    return;
+  }
+  const token = ++wxToken;
+  const reportId = r.id;
+  const key = placeKey(r);
+  wxBusy = true;
+  wxLoading = true;
+  wxError = "";
+  render();
+  try {
+    const list = await loadPlaces();
+    if (token !== wxToken) return;
+    const place = findPlace(list, city, state);
+    if (!place) {
+      const live = active();
+      if (live && live.id === reportId) live.wx = null;
+      wxError = "City not found. Check spelling.";
+      wxManualOpen = true;
+      wxFailKey = key;
+      wxFailAt = Date.now();
+      return;
+    }
+    const lat = Math.round(place[2] * 10000) / 10000;
+    const lon = Math.round(place[3] * 10000) / 10000;
+    const points = await fetchJson("https://api.weather.gov/points/" + lat + "," + lon);
+    if (token !== wxToken) return;
+    const props = (points && points.properties) || {};
+    const tz = props.timeZone || "America/Chicago";
+    if (!props.observationStations) throw new Error("stations");
+    const stations = await fetchJson(props.observationStations);
+    if (token !== wxToken) return;
+    const first = stations && stations.features && stations.features[0] && stations.features[0].properties;
+    if (!first || !first.stationIdentifier) throw new Error("station");
+    const start = new Date(zonedTime(r.date, 6, 0, tz)).toISOString();
+    const end = new Date(zonedTime(r.date, 18, 0, tz)).toISOString();
+    const obsUrl = "https://api.weather.gov/stations/" + encodeURIComponent(first.stationIdentifier) + "/observations?start=" + encodeURIComponent(start) + "&end=" + encodeURIComponent(end);
+    const obs = await fetchJson(obsUrl);
+    if (token !== wxToken) return;
+    const slots = SLOT_TIMES.map((target) => buildSlot(target, r.date, tz, (obs && obs.features) || []));
+    const live = active();
+    if (!live || live.id !== reportId || placeKey(live) !== key) return;
+    live.wx = {
+      lat: lat,
+      lon: lon,
+      tz: tz,
+      station: first.stationIdentifier,
+      stationName: first.name || "",
+      fetchedAt: new Date().toISOString(),
+      placeKey: key,
+      slots: slots,
+    };
+    rememberLocation(live);
+    save();
+    wxError = "";
+    wxFailAt = 0;
+    wxFailKey = "";
+  } catch (err) {
+    if (token !== wxToken) return;
+    wxError = "Weather unavailable. No signal.";
+    wxManualOpen = true;
+    wxFailKey = key;
+    wxFailAt = Date.now();
+  } finally {
+    if (token === wxToken) {
+      wxBusy = false;
+      wxLoading = false;
+      render();
+    }
+  }
+}
+
+function rememberLocation(r) {
+  if (!r) return;
+  const project = String(r.projectNumber || "").trim();
+  const city = String(r.jobCity || "").trim();
+  const state = String(r.jobState || "").trim().toUpperCase();
+  if (!project || !city || state.length !== 2) return;
+  if (!store.settings.projectLocations || typeof store.settings.projectLocations !== "object" || Array.isArray(store.settings.projectLocations)) {
+    store.settings.projectLocations = {};
+  }
+  const prev = store.settings.projectLocations[project];
+  if (prev && prev.city === city && String(prev.state || "").toUpperCase() === state) return;
+  store.settings.projectLocations[project] = { city: city, state: state };
+}
+
+function applySavedLocation() {
+  const r = active();
+  if (!r) return;
+  const loc = (store.settings.projectLocations || {})[String(r.projectNumber || "").trim()];
+  if (!loc) return;
+  const city = loc.city || "";
+  const state = String(loc.state || "").toUpperCase();
+  if (r.jobCity === city && r.jobState === state) return;
+  r.jobCity = city;
+  r.jobState = state;
+  r.wx = null;
+  wxError = "";
+  wxFailAt = 0;
+  wxFailKey = "";
+  save();
+}
+
+function wxSvg(kind) {
+  const ray = (cx, cy, inner, outer) => {
+    let s = "";
+    for (let a = 0; a < 360; a += 45) {
+      const r = a * Math.PI / 180;
+      s += '<line x1="' + (cx + inner * Math.cos(r)).toFixed(1) + '" y1="' + (cy + inner * Math.sin(r)).toFixed(1) + '" x2="' + (cx + outer * Math.cos(r)).toFixed(1) + '" y2="' + (cy + outer * Math.sin(r)).toFixed(1) + '" stroke="#ffd66e" stroke-width="1.8" stroke-linecap="round"/>';
+    }
+    return s;
+  };
+  const sun = (cx, cy, rad, inner, outer) => '<circle cx="' + cx + '" cy="' + cy + '" r="' + rad + '" fill="#ffd66e"/>' + ray(cx, cy, inner, outer);
+  const moon = '<circle cx="18" cy="20" r="9" fill="#a7bfdc"/><circle cx="23" cy="16" r="8" fill="#fff"/>';
+  const cloudShape = (fill, grow) => {
+    const g = grow || 0;
+    return '<g fill="' + fill + '"><circle cx="14" cy="22" r="' + (6 + g) + '"/><circle cx="21" cy="17" r="' + (8 + g) + '"/><circle cx="28" cy="23" r="' + (5 + g) + '"/><rect x="' + (9 - g) + '" y="22" width="' + (22 + g * 2) + '" height="' + (6 + g) + '" rx="3"/></g>';
+  };
+  const cloud = (fill, stroke) => (stroke ? cloudShape(stroke, 1.3) : "") + cloudShape(fill, 0);
+  let body = cloud("#9aa5b1");
+  if (kind === "sun") body = sun(20, 20, 7, 10, 14);
+  else if (kind === "moon") body = moon;
+  else if (kind === "partly-day") body = sun(12, 12, 5, 7, 10) + cloud("#fff", "#9aa5b1");
+  else if (kind === "partly-night") body = '<circle cx="12" cy="14" r="7" fill="#a7bfdc"/><circle cx="16" cy="11" r="6" fill="#fff"/>' + cloud("#fff", "#9aa5b1");
+  else if (kind === "rain") body = cloud("#9aa5b1") + '<g stroke="#5b8fd9" stroke-width="1.6" stroke-linecap="round"><line x1="14" y1="30" x2="12" y2="36"/><line x1="20" y1="30" x2="18" y2="36"/><line x1="26" y1="30" x2="24" y2="36"/></g>';
+  else if (kind === "storm") body = cloud("#9aa5b1") + '<polygon points="21,20 16,28 20,28 17,36 26,26 21,26" fill="#e0a800"/>' + '<g stroke="#5b8fd9" stroke-width="1.6" stroke-linecap="round"><line x1="14" y1="32" x2="12" y2="37"/><line x1="27" y1="32" x2="25" y2="37"/></g>';
+  else if (kind === "snow") body = cloud("#9aa5b1") + '<g fill="#5b8fd9"><circle cx="14" cy="33" r="1.4"/><circle cx="20" cy="35" r="1.4"/><circle cx="26" cy="33" r="1.4"/></g>';
+  else if (kind === "fog") body = '<g fill="#9aa5b1"><rect x="8" y="12" width="24" height="3" rx="1.5"/><rect x="8" y="19" width="24" height="3" rx="1.5"/><rect x="8" y="26" width="24" height="3" rx="1.5"/></g>';
+  return '<svg class="wx-ico" viewBox="0 0 40 40" width="40" height="40" aria-hidden="true">' + body + "</svg>";
+}
+
+function weatherManual(r) {
+  const selected = Array.isArray(r.weather) ? r.weather : [];
+  return '<div class="chips">' +
+    WEATHER.map((w) => '<button type="button" class="chip' + (selected.indexOf(w) >= 0 ? " on" : "") + '" data-wx="' + esc(w) + '">' + esc(w) + "</button>").join("") +
+    "</div>" +
+    field("Temp °F", '<input inputmode="decimal" data-k="tempF" value="' + esc(r.tempF || "") + '" placeholder="°F" />');
+}
+
+function slotHtml(slot) {
+  const label = esc((slot && slot.t) || "");
+  if (!slot || slot.status === "later") return '<div class="wx-col"><div class="wx-time">' + label + '</div><div class="wx-cond">Later today.</div></div>';
+  if (slot.status !== "ok") return '<div class="wx-col"><div class="wx-time">' + label + '</div><div class="wx-cond">No reading.</div></div>';
+  const temp = slot.tempF === "" || slot.tempF == null ? "—" : slot.tempF + "°";
+  return '<div class="wx-col"><div class="wx-time">' + label + "</div>" + wxSvg(slot.icon) +
+    '<div class="wx-temp">' + esc(temp) + "</div>" +
+    '<div class="wx-cond">' + esc(slot.cond || "") + "</div>" +
+    '<div class="wx-meta">Precip ' + esc(slot.precip || "—") + "<br>Wind " + esc(slot.wind || "—") + "<br>Humidity " + esc(slot.hum || "—") + "</div></div>";
+}
+
+function weatherCard(r) {
+  const cityRow = '<div class="row loc"><div>' +
+    field("Job city", input("jobCity", r.jobCity, 'placeholder="Houston" autocapitalize="words"')) +
+    "</div><div>" +
+    field("State", '<input data-k="jobState" value="' + esc(r.jobState || "") + '" maxlength="2" autocapitalize="characters" placeholder="TX" />') +
+    "</div></div>";
+  const hasCity = !!String(r.jobCity || "").trim() && String(r.jobState || "").trim().length >= 2;
+  const hasSlots = !!(r.wx && r.wx.placeKey === placeKey(r) && Array.isArray(r.wx.slots) && r.wx.slots.length);
+  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  let body = "";
+  if (!weatherDateOk(r.date)) {
+    body = '<p class="hint">Observed weather is only available for the last 7 days. Enter it below.</p>' + weatherManual(r);
+  } else {
+    body = '<button type="button" class="btn btn-outline" data-act="wxrefresh"' + (wxLoading ? " disabled" : "") + ">" +
+      (wxLoading ? '<i class="spin"></i> Loading weather…' : "Refresh weather") + "</button>";
+    if (wxError) body += '<p class="hint">' + esc(wxError) + "</p>";
+    else if (offline && hasCity && !hasSlots) body += '<p class="hint">Weather unavailable. No signal.</p>';
+    if (!hasCity) body += '<p class="hint">Enter the job city and state.</p>';
+    if (hasSlots) {
+      body += '<div class="wx-grid">' + r.wx.slots.map(slotHtml).join("") + "</div>";
+      if (r.wx.station) body += '<p class="wx-src">Source: National Weather Service · ' + esc(r.wx.station) + " " + esc(r.wx.stationName || "") + "</p>";
+    }
+    if (wxError || wxManualOpen || (offline && hasCity && !hasSlots)) body += weatherManual(r);
+    else if (hasSlots) body += '<button type="button" class="btn btn-ghost" data-act="wxmanual">Enter weather manually</button>';
+  }
+  return '<div class="card"><h2>Weather</h2>' + cityRow + body +
+    ynRow("Did weather affect work today?", "weatherImpact", r.weatherImpact || "") +
+    (r.weatherImpact === "yes" ? field("Explain", ta("weatherImpactExplain", r.weatherImpactExplain, "How did weather affect the work")) : "") +
+    "</div>";
+}
+
+function splitRow(left, right) {
+  return '<div class="row"><div>' + left + "</div><div>" + right + "</div></div>";
+}
+
 function stepHtml(r) {
   if (step === 0) {
     return '<div class="card"><h2>Job information</h2>' +
@@ -408,17 +873,10 @@ function stepHtml(r) {
       "</div>";
   }
   if (step === 1) {
-    const selected = Array.isArray(r.weather) ? r.weather : [];
     return '<div class="card"><h2>Summary of work performed</h2>' +
       ta("summary", r.summary, "Track work, surfacing, tie replacement, welding…") +
       "</div>" +
-      '<div class="card"><h2>Weather</h2><div class="chips">' +
-      WEATHER.map((w) => '<button type="button" class="chip' + (selected.indexOf(w) >= 0 ? " on" : "") + '" data-wx="' + esc(w) + '">' + esc(w) + "</button>").join("") +
-      "</div>" +
-      field("Temp °F", '<input inputmode="decimal" data-k="tempF" value="' + esc(r.tempF || "") + '" placeholder="°F" />') +
-      ynRow("Did weather affect work today?", "weatherImpact", r.weatherImpact || "") +
-      (r.weatherImpact === "yes" ? field("Explain", ta("weatherImpactExplain", r.weatherImpactExplain, "How did weather affect the work")) : "") +
-      "</div>" +
+      weatherCard(r) +
       '<div class="card"><h2>Delays / interruptions</h2>' +
       ynRow("Any delays today?", "delaysYN", r.delaysYN || "") +
       (r.delaysYN === "yes"
@@ -443,16 +901,17 @@ function stepHtml(r) {
         '<button class="btn btn-danger" style="width:auto;margin:0;padding:6px 10px;font-size:12px" data-rm="manpower" data-id="' + row.id + '">Remove</button></div>' +
         '<input data-row="manpower" data-id="' + row.id + '" data-f="className" value="' + esc(row.className) + '" placeholder="Write in any class or equipment" autocapitalize="words" />' +
         kindToggle(row) +
-        '<div class="row">' +
-        field("QTY", '<input inputmode="decimal" data-row="manpower" data-id="' + row.id + '" data-f="qty" value="' + esc(row.qty) + '" />') +
-        field("Hours", '<input inputmode="decimal" data-row="manpower" data-id="' + row.id + '" data-f="hours" value="' + esc(row.hours) + '" />') +
+        splitRow(
+          field("QTY", '<input inputmode="decimal" data-row="manpower" data-id="' + row.id + '" data-f="qty" value="' + esc(row.qty) + '" />'),
+          field("Hours", '<input inputmode="decimal" data-row="manpower" data-id="' + row.id + '" data-f="hours" value="' + esc(row.hours) + '" />')
+        ) +
         "</div></div>").join("") +
       '<button class="btn btn-ghost" data-add="manpower">Add another class / equipment</button></div>' +
       '<div class="card"><h2>Subcontractors</h2>' +
       r.subcontractors.map((row) => '<div class="item"><div class="item-top"><span class="muted">Subcontractor</span>' +
         '<button class="btn btn-danger" style="width:auto;margin:0;padding:6px 10px;font-size:12px" data-rm="subcontractors" data-id="' + row.id + '">Remove</button></div>' +
         '<input data-row="subcontractors" data-id="' + row.id + '" data-f="description" value="' + esc(row.description) + '" placeholder="Company or crew" />' +
-        '<div class="row">' + field("Hours", '<input inputmode="decimal" data-row="subcontractors" data-id="' + row.id + '" data-f="hours" value="' + esc(row.hours) + '" />') + "</div>" +
+        '<div class="row"><div>' + field("Hours", '<input inputmode="decimal" data-row="subcontractors" data-id="' + row.id + '" data-f="hours" value="' + esc(row.hours) + '" />') + "</div></div>" +
         field("Details", '<input data-row="subcontractors" data-id="' + row.id + '" data-f="details" value="' + esc(row.details) + '" placeholder="Work performed" />') +
         "</div>").join("") +
       '<button class="btn btn-ghost" data-add="subcontractors">Add subcontractor</button></div>';
@@ -536,10 +995,10 @@ function materialBlock(title, key, rows, bol) {
     rows.map((row) => '<div class="item"><div class="item-top"><span class="muted">Item</span>' +
       '<button class="btn btn-danger" style="width:auto;margin:0;padding:6px 10px;font-size:12px" data-rm="' + key + '" data-id="' + row.id + '">Remove</button></div>' +
       '<input data-row="' + key + '" data-id="' + row.id + '" data-f="description" value="' + esc(row.description) + '" placeholder="Description" />' +
-      '<div class="row">' +
-      field("QTY", '<input inputmode="decimal" data-row="' + key + '" data-id="' + row.id + '" data-f="qty" value="' + esc(row.qty) + '" />') +
-      field("UOM", '<input data-row="' + key + '" data-id="' + row.id + '" data-f="uom" value="' + esc(row.uom || "") + '" list="uom-options" placeholder="EA, LF, TN" autocapitalize="characters" />') +
-      "</div>" +
+      splitRow(
+        field("QTY", '<input inputmode="decimal" data-row="' + key + '" data-id="' + row.id + '" data-f="qty" value="' + esc(row.qty) + '" />'),
+        field("UOM", '<input data-row="' + key + '" data-id="' + row.id + '" data-f="uom" value="' + esc(row.uom || "") + '" list="uom-options" placeholder="EA, LF, TN" autocapitalize="characters" />')
+      ) +
       (bol ? field("BOL filed", '<select data-row="' + key + '" data-id="' + row.id + '" data-f="bolFiled">' +
         '<option value="" ' + (row.bolFiled === "" ? "selected" : "") + "></option>" +
         '<option value="yes" ' + (row.bolFiled === "yes" ? "selected" : "") + ">Yes</option>" +
@@ -583,11 +1042,27 @@ function bind() {
   }));
   document.querySelectorAll("[data-k]").forEach((el) => el.addEventListener("input", () => {
     const k = el.getAttribute("data-k");
+    let value = el.value;
+    if (k === "jobState") {
+      value = String(value || "").toUpperCase().replace(/[^A-Za-z]/g, "").slice(0, 2);
+      if (el.value !== value) el.value = value;
+    }
     const extra = k === "pdfTitle" ? { pdfTitleCustom: true } : {};
-    patch({ [k]: el.value, ...extra });
+    patch({ [k]: value, ...extra });
     const r = active();
     if (r && !r.pdfTitleCustom && (k === "date" || k === "projectNumber" || k === "printName")) {
       patch({ pdfTitle: autoTitle(r) });
+    }
+    if (k === "projectNumber") applySavedLocation();
+    if ((k === "jobCity" || k === "jobState" || k === "date") && r) {
+      if (r.wx && r.wx.placeKey !== placeKey(r)) {
+        r.wx = null;
+        save();
+      }
+      wxError = "";
+      wxFailAt = 0;
+      wxFailKey = "";
+      if (weatherDateOk(r.date) && String(r.jobCity || "").trim() && String(r.jobState || "").trim().length >= 2) scheduleWeather();
     }
     if (step === 6 && (k === "pdfTitle" || k === "printName")) queuePrepare();
   }));
@@ -638,6 +1113,9 @@ function bind() {
   }));
   document.querySelectorAll("[data-proj]").forEach((b) => b.addEventListener("click", () => {
     patch({ projectNumber: b.getAttribute("data-proj") });
+    const r = active();
+    if (r && !r.pdfTitleCustom) patch({ pdfTitle: autoTitle(r) });
+    applySavedLocation();
     render();
   }));
   document.querySelectorAll("[data-yn]").forEach((b) => b.addEventListener("click", () => {
@@ -706,6 +1184,22 @@ function onAct(e) {
   if (act === "send") sendReport();
   if (act === "sent-yes") markSent();
   if (act === "sent-no") { askSent = false; render(); }
+  if (act === "wxrefresh") {
+    const r = active();
+    if (!r || !weatherDateOk(r.date)) return;
+    if (!String(r.jobCity || "").trim() || String(r.jobState || "").trim().length < 2) {
+      toast("Enter the job city and state.");
+      return;
+    }
+    wxFailAt = 0;
+    wxFailKey = "";
+    wxError = "";
+    fetchWeather(true);
+  }
+  if (act === "wxmanual") {
+    wxManualOpen = !wxManualOpen;
+    render();
+  }
 }
 
 function jobOk() {
@@ -741,6 +1235,16 @@ function start(fromLast, forceNew) {
       r.projectNumber = last.projectNumber;
       r.printName = last.printName || store.settings.defaultName;
       r.recipientEmail = last.recipientEmail || store.settings.defaultEmail;
+      const proj = String(last.projectNumber || "").trim();
+      const loc = (store.settings.projectLocations || {})[proj];
+      if (loc && (loc.city || loc.state)) {
+        r.jobCity = loc.city || "";
+        r.jobState = String(loc.state || "").toUpperCase();
+      } else {
+        r.jobCity = last.jobCity || "";
+        r.jobState = String(last.jobState || "").toUpperCase();
+      }
+      r.wx = null;
       r.manpower = last.manpower.length
         ? last.manpower.map((row) => ({ ...emptyRow.manpower(), className: row.className, qty: row.qty, kind: row.kind === "equip" ? "equip" : "crew" }))
         : [emptyRow.manpower()];
@@ -964,6 +1468,25 @@ function reportText(r) {
   const crew = ordered.map((x) => "  • " + x.className + " (" + (x.kind === "equip" ? "Equip" : "Crew") + ")  qty " + (x.qty || "—") + "  hrs " + (x.hours || "—")).join("\n");
   const subs = r.subcontractors.filter((x) => String(x.description || "").trim()).map((x) => "  • " + x.description + "  hrs " + (x.hours || "—") + (x.details ? "\n    " + x.details : "")).join("\n");
   const weather = (r.weather || []).join(", ") || "—";
+  const city = String(r.jobCity || "").trim();
+  const st = String(r.jobState || "").trim().toUpperCase();
+  const locLine = city ? "Job location: " + city + (st ? ", " + st : "") : "";
+  let weatherLines;
+  if (wxReady(r)) {
+    weatherLines = ["Observed weather (National Weather Service · station " + (r.wx.station || "") + " " + (r.wx.stationName || "") + "):"];
+    (r.wx.slots || []).forEach((s) => {
+      if (!s) return;
+      if (s.status === "later") weatherLines.push("  " + s.t + ": Later today.");
+      else if (s.status !== "ok") weatherLines.push("  " + s.t + ": No reading.");
+      else weatherLines.push("  " + s.t + ": " + (s.tempF ? s.tempF + " F" : "—") + "  " + (s.cond || "—") + "  ·  Precip " + (s.precip || "—") + "  ·  Wind " + (s.wind || "—") + "  ·  Humidity " + (s.hum || "—"));
+    });
+    if ((r.weather || []).length || String(r.tempF || "").trim()) {
+      weatherLines.push("Manual weather: " + weather);
+      weatherLines.push("Temp F: " + (r.tempF || "—"));
+    }
+  } else {
+    weatherLines = ["Weather: " + weather, "Temp F: " + (r.tempF || "—")];
+  }
   const delayLine = r.delaysYN === "yes"
     ? "Yes" + (r.delayHours ? ", " + r.delayHours + " hrs lost" : "") + (r.delays ? " — " + r.delays : "")
     : "No";
@@ -972,8 +1495,8 @@ function reportText(r) {
     "Date: " + (formatLong(r.date) || r.date),
     "Project #: " + (r.projectNumber || "—"),
     "Supervisor: " + (r.printName || "—"),
-    "Weather: " + weather,
-    "Temp F: " + (r.tempF || "—"),
+    locLine,
+    ...weatherLines,
     "", "SUMMARY OF WORK PERFORMED", String(r.summary || "").trim() || "—",
     "", "DELAYS / INTERRUPTIONS", delayLine,
     r.weatherImpact === "yes" ? "WEATHER IMPACT: " + (r.weatherImpactExplain || "Yes") : "",
@@ -1062,6 +1585,78 @@ function placeFitted(doc, dataUrl, boxX, boxY, boxW, boxH) {
   if (fmt !== "PNG" && fmt !== "JPEG") fmt = "JPEG";
   doc.addImage(dataUrl, fmt, x, y, w, h, undefined, "FAST");
   return { w: w, h: h };
+}
+
+function drawCloud(doc, ix, iy, fill, stroke) {
+  const paint = (color, grow) => {
+    doc.setFillColor(color[0], color[1], color[2]);
+    doc.circle(ix - 6, iy + 2, 6 + grow, "F");
+    doc.circle(ix + 1, iy - 3, 8 + grow, "F");
+    doc.circle(ix + 8, iy + 3, 5 + grow, "F");
+    doc.roundedRect(ix - 11 - grow, iy + 2, 24 + grow * 2, 6 + grow, 3, 3, "F");
+  };
+  if (stroke) paint(stroke, 1.2);
+  paint(fill, 0);
+}
+
+function drawSun(doc, ix, iy, rad, inner, outer) {
+  doc.setFillColor(255, 214, 110);
+  doc.circle(ix, iy, rad, "F");
+  doc.setDrawColor(255, 214, 110);
+  doc.setLineWidth(1.6);
+  for (let a = 0; a < 360; a += 45) {
+    const rads = a * Math.PI / 180;
+    doc.line(ix + inner * Math.cos(rads), iy + inner * Math.sin(rads), ix + outer * Math.cos(rads), iy + outer * Math.sin(rads));
+  }
+}
+
+function drawMoon(doc, ix, iy, rad, ox, oy, punch) {
+  doc.setFillColor(167, 191, 220);
+  doc.circle(ix, iy, rad, "F");
+  doc.setFillColor(255, 255, 255);
+  doc.circle(ix + ox, iy + oy, punch, "F");
+}
+
+function drawWxIcon(doc, kind, ix, iy) {
+  if (kind === "sun") drawSun(doc, ix, iy, 7, 10, 13.5);
+  else if (kind === "moon") drawMoon(doc, ix, iy, 10, 5.5, -4.5, 9);
+  else if (kind === "partly-day") {
+    drawSun(doc, ix - 7, iy - 7, 5, 7, 9.5);
+    drawCloud(doc, ix, iy, [255, 255, 255], [170, 178, 188]);
+  } else if (kind === "partly-night") {
+    drawMoon(doc, ix - 7, iy - 7, 7, 4, -3, 6);
+    drawCloud(doc, ix, iy, [255, 255, 255], [170, 178, 188]);
+  } else if (kind === "rain" || kind === "storm" || kind === "snow") {
+    drawCloud(doc, ix, iy, [154, 165, 177], null);
+    if (kind === "storm") {
+      doc.setFillColor(224, 168, 0);
+      doc.triangle(ix + 1, iy + 4, ix - 4, iy + 13, ix + 1, iy + 12, "F");
+      doc.triangle(ix + 0.5, iy + 11, ix - 2, iy + 20, ix + 6, iy + 11, "F");
+    }
+    doc.setDrawColor(91, 143, 217);
+    doc.setLineWidth(1.3);
+    if (kind === "snow") {
+      doc.setFillColor(91, 143, 217);
+      doc.circle(ix - 6, iy + 14, 1.3, "F");
+      doc.circle(ix, iy + 16, 1.3, "F");
+      doc.circle(ix + 6, iy + 14, 1.3, "F");
+    } else if (kind === "storm") {
+      doc.line(ix - 7, iy + 16, ix - 9, iy + 21);
+      doc.line(ix + 7, iy + 16, ix + 5, iy + 21);
+    } else {
+      doc.line(ix - 6, iy + 12, ix - 8, iy + 18);
+      doc.line(ix, iy + 12, ix - 2, iy + 18);
+      doc.line(ix + 6, iy + 12, ix + 4, iy + 18);
+    }
+  } else if (kind === "fog") {
+    doc.setFillColor(154, 165, 177);
+    doc.roundedRect(ix - 12, iy - 8, 24, 3, 1.5, 1.5, "F");
+    doc.roundedRect(ix - 12, iy - 1, 24, 3, 1.5, 1.5, "F");
+    doc.roundedRect(ix - 12, iy + 6, 24, 3, 1.5, 1.5, "F");
+  } else {
+    drawCloud(doc, ix, iy, [154, 165, 177], null);
+  }
+  doc.setLineWidth(0.4);
 }
 
 async function buildPdf(r) {
@@ -1209,9 +1804,18 @@ async function buildPdf(r) {
   doc.rect(0, 78, pageW, 3, "F");
 
   y = 88;
-  const weatherTxt = (Array.isArray(r.weather) ? r.weather : []).filter(Boolean).join(", ") || "—";
-  const tempTxt = String(r.tempF || "").trim() ? String(r.tempF).trim() + "\u00B0F" : "—";
-  const info = "Supervisor  " + (r.printName || "—") + "    ·    Weather  " + weatherTxt + "    ·    Temp  " + tempTxt;
+  const hasWx = wxReady(r);
+  let info;
+  if (hasWx) {
+    const city = String(r.jobCity || "").trim();
+    const st = String(r.jobState || "").trim().toUpperCase();
+    const loc = city ? city + (st ? ", " + st : "") : "—";
+    info = "Supervisor  " + (r.printName || "—") + "    ·    Job location  " + loc;
+  } else {
+    const weatherTxt = (Array.isArray(r.weather) ? r.weather : []).filter(Boolean).join(", ") || "—";
+    const tempTxt = String(r.tempF || "").trim() ? String(r.tempF).trim() + "\u00B0F" : "—";
+    info = "Supervisor  " + (r.printName || "—") + "    ·    Weather  " + weatherTxt + "    ·    Temp  " + tempTxt;
+  }
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   const infoLines = doc.splitTextToSize(info, contentW - 12);
@@ -1221,6 +1825,80 @@ async function buildPdf(r) {
   doc.setTextColor(INK[0], INK[1], INK[2]);
   doc.text(infoLines, margin + 6, y + 12);
   y += infoH + 6;
+
+  if (hasWx) {
+    if (y + 104 > contentBottom) newPage();
+    const city = String(r.jobCity || "").trim();
+    const st = String(r.jobState || "").trim().toUpperCase();
+    const place = city ? city + (st ? ", " + st : "") : "";
+    paintBar("Weather · " + place, false);
+    const boxTop = y;
+    const boxH = 74;
+    const colW = contentW / 3;
+    doc.setFillColor(255, 255, 255);
+    doc.setDrawColor(LINE[0], LINE[1], LINE[2]);
+    doc.setLineWidth(0.7);
+    doc.rect(margin, boxTop, contentW, boxH, "FD");
+    const slots = Array.isArray(r.wx.slots) ? r.wx.slots : [];
+    for (let i = 0; i < 3; i += 1) {
+      const slot = slots[i] || blankSlot(SLOT_TIMES[i].t, "miss", "No reading.");
+      const x = margin + i * colW;
+      const ix = x + 26;
+      const iy = boxTop + 24;
+      if (slot.status === "ok" && slot.icon) drawWxIcon(doc, slot.icon, ix, iy);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
+      doc.text(String(slot.t || ""), ix, boxTop + 50, { align: "center" });
+      const tx = x + 48;
+      const textW = colW - 56;
+      if (slot.status !== "ok") {
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9);
+        doc.setTextColor(NAVY[0], NAVY[1], NAVY[2]);
+        const msg = slot.status === "later" ? "Later today." : "No reading.";
+        doc.text(doc.splitTextToSize(msg, textW), tx, boxTop + 32);
+      } else {
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(20);
+        doc.setTextColor(INK[0], INK[1], INK[2]);
+        doc.text(slot.tempF ? slot.tempF + "\u00B0" : "—", tx, boxTop + 26);
+        doc.setFontSize(8);
+        doc.setTextColor(NAVY[0], NAVY[1], NAVY[2]);
+        let cond = String(slot.cond || "");
+        const condLines = doc.splitTextToSize(cond, textW);
+        if (condLines.length > 1) cond = String(condLines[0]).replace(/\s+\S*$/, "") + "...";
+        doc.text(cond || "—", tx, boxTop + 38);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7.5);
+        doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
+        const meta = [
+          "Precipitation  " + (slot.precip || "—"),
+          "Wind  " + (slot.wind || "—"),
+          "Humidity  " + (slot.hum || "—"),
+        ];
+        meta.forEach((line, mi) => doc.text(line, tx, boxTop + 50 + mi * 8));
+      }
+    }
+    doc.setDrawColor(LINE[0], LINE[1], LINE[2]);
+    doc.setLineWidth(0.7);
+    doc.rect(margin, boxTop, contentW, boxH);
+    doc.setLineWidth(0.4);
+    doc.line(margin + colW, boxTop, margin + colW, boxTop + boxH);
+    doc.line(margin + colW * 2, boxTop, margin + colW * 2, boxTop + boxH);
+    y = boxTop + boxH + 11;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
+    const src = "Source: National Weather Service · Station " + (r.wx.station || "") + " (" + (r.wx.stationName || "") + ") · observed readings";
+    const srcLines = doc.splitTextToSize(src, contentW - 12);
+    srcLines.forEach((line) => {
+      doc.text(line, margin + contentW / 2, y, { align: "center" });
+      y += 9;
+    });
+    y += 4;
+    doc.setLineWidth(0.4);
+  }
 
   openText("Summary of work performed", String(r.summary || "").trim() || "—");
 
@@ -1465,10 +2143,12 @@ async function previewPdf() {
 
 function packMatches(pack, r) {
   if (!pack || !pack.ready || !pack.blob || !r) return false;
+  const wxStamp = r.wx && r.wx.fetchedAt ? String(r.wx.fetchedAt) : "";
   return pack.id === r.id
     && pack.sig === (r.signatureDataUrl || "")
     && pack.title === String(r.pdfTitle || "")
-    && pack.name === String(r.printName || "");
+    && pack.name === String(r.printName || "")
+    && pack.wx === wxStamp;
 }
 
 function setShareBusy(busy) {
@@ -1489,11 +2169,18 @@ function queuePrepare() {
 async function prepareSendFiles() {
   const r = active();
   if (!r || screen !== "wizard" || step !== 6) return;
+  if (wxBusy) {
+    prepareToken += 1;
+    if (preparedFiles) preparedFiles.ready = false;
+    setShareBusy(true);
+    return;
+  }
   const token = ++prepareToken;
   const sig = r.signatureDataUrl || "";
   const title = String(r.pdfTitle || "");
   const name = String(r.printName || "");
-  preparedFiles = { id: r.id, sig: sig, title: title, name: name, token: token, ready: false, blob: null, pdfFile: null, photoFiles: [] };
+  const wxStamp = r.wx && r.wx.fetchedAt ? String(r.wx.fetchedAt) : "";
+  preparedFiles = { id: r.id, sig: sig, title: title, name: name, wx: wxStamp, token: token, ready: false, blob: null, pdfFile: null, photoFiles: [] };
   setShareBusy(true);
   try {
     if (!window.jspdf) throw new Error("pdf");
@@ -1502,6 +2189,8 @@ async function prepareSendFiles() {
     const live = active();
     if (!live || live.id !== r.id || screen !== "wizard" || step !== 6) return;
     if ((live.signatureDataUrl || "") !== sig || String(live.pdfTitle || "") !== title || String(live.printName || "") !== name) return;
+    const liveWx = live.wx && live.wx.fetchedAt ? String(live.wx.fetchedAt) : "";
+    if (liveWx !== wxStamp) return;
     const pdfFile = new File([blob], fileName(live), { type: "application/pdf" });
     const photoFiles = [];
     const list = live.photos || [];
@@ -1515,11 +2204,11 @@ async function prepareSendFiles() {
     if (token !== prepareToken) return;
     const now = active();
     if (!now || (now.signatureDataUrl || "") !== sig) return;
-    preparedFiles = { id: live.id, sig: sig, title: title, name: name, token: token, ready: true, blob: blob, pdfFile: pdfFile, photoFiles: photoFiles };
+    preparedFiles = { id: live.id, sig: sig, title: title, name: name, wx: wxStamp, token: token, ready: true, blob: blob, pdfFile: pdfFile, photoFiles: photoFiles };
     setShareBusy(false);
   } catch (err) {
     if (token !== prepareToken) return;
-    preparedFiles = { id: r.id, sig: sig, title: title, name: name, token: token, ready: false, blob: null, pdfFile: null, photoFiles: [] };
+    preparedFiles = { id: r.id, sig: sig, title: title, name: name, wx: wxStamp, token: token, ready: false, blob: null, pdfFile: null, photoFiles: [] };
     setShareBusy(false);
   }
 }
@@ -1590,6 +2279,7 @@ function rememberSettings(r) {
   store.settings.defaultName = String(r.printName || "").trim() || store.settings.defaultName;
   store.settings.defaultEmail = String(r.recipientEmail || "").trim() || DEFAULT_EMAIL;
   store.settings.lastProject = project || store.settings.lastProject;
+  rememberLocation(r);
 }
 
 function markSent() {

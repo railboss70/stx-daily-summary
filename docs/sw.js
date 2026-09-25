@@ -1,9 +1,9 @@
-const CACHE = "stx-dps-v8";
+const CACHE = "stx-dps-v9";
 const ASSETS = [
   "./",
   "./index.html",
   "./app.js",
-  "./app.js?v=8",
+  "./app.js?v=9",
   "./jspdf.umd.min.js",
   "./stx-logo.png",
   "./stx-logo-pdf.jpg",
@@ -11,6 +11,7 @@ const ASSETS = [
   "./icon-192.png",
   "./icon-512.png",
   "./manifest.webmanifest",
+  "./us-places.json",
 ];
 
 self.addEventListener("install", (event) => {
@@ -29,6 +30,12 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  let host = "";
+  try { host = new URL(event.request.url).hostname; } catch (e) { host = ""; }
+  if (host === "api.weather.gov") {
+    event.respondWith(fetch(event.request));
+    return;
+  }
   event.respondWith((async () => {
     const cached = await caches.match(event.request);
     if (cached) return cached;
