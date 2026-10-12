@@ -208,6 +208,7 @@ function fillReport(r) {
   if (r.jobCity == null) r.jobCity = "";
   r.jobState = String(r.jobState == null ? "" : r.jobState).replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase();
   if (!r.wx || typeof r.wx !== "object") r.wx = null;
+  r.wxManual = normManual(r.wxManual);
   if (r.delaysYN == null) r.delaysYN = "";
   if (r.delayHours == null) r.delayHours = "";
   if (r.delays == null) r.delays = "";
@@ -365,7 +366,9 @@ function render() {
     const row = prev.getAttribute("data-row");
     const f = prev.getAttribute("data-f");
     const id = prev.getAttribute("data-id");
+    const wxm = prev.getAttribute("data-wxmt");
     if (k) focusSel = '[data-k="' + k + '"]';
+    else if (wxm != null && f) focusSel = '[data-wxmt="' + wxm + '"][data-f="' + f + '"]';
     else if (row && f && id) focusSel = '[data-row="' + row + '"][data-id="' + id + '"][data-f="' + f + '"]';
     if (focusSel && typeof prev.selectionStart === "number") caret = prev.selectionStart;
   }
@@ -563,6 +566,7 @@ function slotIsFuture(dateStr, hour, minute, timeZone) {
 function numVal(obj) {
   if (obj == null) return null;
   const v = typeof obj === "number" ? obj : obj.value;
+  if (v == null || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
@@ -710,14 +714,29 @@ async function fetchWeather(force) {
     if (!props.observationStations) throw new Error("stations");
     const stations = await fetchJson(props.observationStations);
     if (token !== wxToken) return;
-    const first = stations && stations.features && stations.features[0] && stations.features[0].properties;
-    if (!first || !first.stationIdentifier) throw new Error("station");
     const start = new Date(zonedTime(r.date, 6, 0, tz)).toISOString();
     const end = new Date(zonedTime(r.date, 18, 0, tz)).toISOString();
-    const obsUrl = "https://api.weather.gov/stations/" + encodeURIComponent(first.stationIdentifier) + "/observations?start=" + encodeURIComponent(start) + "&end=" + encodeURIComponent(end);
-    const obs = await fetchJson(obsUrl);
-    if (token !== wxToken) return;
-    const slots = SLOT_TIMES.map((target) => buildSlot(target, r.date, tz, (obs && obs.features) || []));
+    // The nearest station is sometimes offline or missing hours. Try up to 5 nearby
+    // stations and keep the one with the most readings.
+    const feats = (stations && stations.features) || [];
+    let first = null;
+    let slots = null;
+    let bestOk = -1;
+    for (let si = 0; si < feats.length && si < 5; si += 1) {
+      const st = feats[si] && feats[si].properties;
+      if (!st || !st.stationIdentifier) continue;
+      let obs = null;
+      try {
+        obs = await fetchJson("https://api.weather.gov/stations/" + encodeURIComponent(st.stationIdentifier) + "/observations?start=" + encodeURIComponent(start) + "&end=" + encodeURIComponent(end));
+      } catch (e) { continue; }
+      if (token !== wxToken) return;
+      const trySlots = SLOT_TIMES.map((target) => buildSlot(target, r.date, tz, (obs && obs.features) || []));
+      const due = trySlots.filter((x) => x.status !== "later").length;
+      const ok = trySlots.filter((x) => x.status === "ok" && x.tempF !== "").length;
+      if (ok > bestOk) { bestOk = ok; first = st; slots = trySlots; }
+      if (ok >= due) break;
+    }
+    if (!first || !slots) throw new Error("station");
     const live = active();
     if (!live || live.id !== reportId || placeKey(live) !== key) return;
     live.wx = {
@@ -737,7 +756,9 @@ async function fetchWeather(force) {
     wxFailKey = "";
   } catch (err) {
     if (token !== wxToken) return;
-    wxError = "Weather unavailable. No signal.";
+    wxError = (typeof navigator !== "undefined" && navigator.onLine === false)
+      ? "Weather unavailable. No signal."
+      : "Couldn't reach the weather service. Tap Refresh to try again, or enter the weather below.";
     wxManualOpen = true;
     wxFailKey = key;
     wxFailAt = Date.now();
@@ -809,12 +830,69 @@ function wxSvg(kind) {
   return '<svg class="wx-ico" viewBox="0 0 40 40" width="40" height="40" aria-hidden="true">' + body + "</svg>";
 }
 
-function weatherManual(r) {
-  const selected = Array.isArray(r.weather) ? r.weather : [];
-  return '<div class="chips">' +
-    WEATHER.map((w) => '<button type="button" class="chip' + (selected.indexOf(w) >= 0 ? " on" : "") + '" data-wx="' + esc(w) + '">' + esc(w) + "</button>").join("") +
-    "</div>" +
-    field("Temp °F", '<input inputmode="decimal" data-k="tempF" value="' + esc(r.tempF || "") + '" placeholder="°F" />');
+const MANUAL_CONDS = [
+  ["sun", "Sunny"], ["partly-day", "Partly cloudy"], ["cloud", "Cloudy"], ["rain", "Rain"],
+  ["storm", "Storms"], ["fog", "Fog"], ["snow", "Snow/Ice"], ["moon", "Clear night"],
+];
+
+function normManual(list) {
+  const src = Array.isArray(list) ? list : [];
+  return SLOT_TIMES.map((t, i) => {
+    const m = src[i] && typeof src[i] === "object" ? src[i] : {};
+    return { icon: String(m.icon || ""), tempF: String(m.tempF == null ? "" : m.tempF), wind: String(m.wind || "") };
+  });
+}
+
+function manualFilled(m) {
+  return !!(m && (m.icon || String(m.tempF || "").trim()));
+}
+
+// Merge observed readings with anything the supervisor typed in.
+// Observed wins; a manual entry fills any hour the station missed.
+function effSlots(r) {
+  const obs = (r && r.wx && r.wx.placeKey === placeKey(r) && Array.isArray(r.wx.slots)) ? r.wx.slots : [];
+  const man = normManual(r && r.wxManual);
+  return SLOT_TIMES.map((t, i) => {
+    const o = obs[i];
+    if (o && o.status === "ok" && o.tempF !== "") return Object.assign({}, o, { src: "nws" });
+    const m = man[i];
+    if (manualFilled(m)) {
+      const c = MANUAL_CONDS.find((x) => x[0] === m.icon);
+      const temp = String(m.tempF || "").replace(/[^0-9-]/g, "");
+      return { t: t.t, status: "ok", src: "manual", icon: m.icon || "", cond: c ? c[1] : "", tempF: temp, precip: "—", wind: String(m.wind || "").trim() || "—", hum: "—", obsTime: "" };
+    }
+    if (o) return Object.assign({}, o, { src: "nws" });
+    return Object.assign(blankSlot(t.t, "miss", "No reading."), { src: "" });
+  });
+}
+
+function hasWeatherStrip(r) {
+  return effSlots(r).some((x) => x.status === "ok");
+}
+
+function weatherSource(r) {
+  const slots = effSlots(r);
+  const nws = slots.some((x) => x.status === "ok" && x.src === "nws");
+  const manTimes = slots.filter((x) => x.status === "ok" && x.src === "manual").map((x) => x.t);
+  const parts = [];
+  if (nws && r.wx) parts.push("National Weather Service · Station " + (r.wx.station || "") + (r.wx.stationName ? " (" + r.wx.stationName + ")" : "") + " · observed readings");
+  if (manTimes.length) parts.push((manTimes.length === 3 ? "All times" : manTimes.join(", ")) + " entered by supervisor on site");
+  return "Source: " + (parts.join(" · ") || "—");
+}
+
+function manualEditor(r) {
+  const man = normManual(r.wxManual);
+  return '<div class="wxm"><p class="hint" style="margin:10px 0 6px">Enter the weather by hand for any time that is missing. Tap a condition, then the temperature.</p>' +
+    SLOT_TIMES.map((t, i) => {
+      const m = man[i];
+      return '<div class="wxm-row"><div class="wxm-time">' + t.t + "</div>" +
+        '<div class="wxm-conds">' + MANUAL_CONDS.map((c) =>
+          '<button type="button" class="wxm-chip' + (m.icon === c[0] ? " on" : "") + '" data-wxm="' + i + '" data-icon="' + c[0] + '">' +
+          wxSvg(c[0]) + "<span>" + c[1] + "</span></button>").join("") + "</div>" +
+        '<div class="row"><div>' + field("Temp °F", '<input inputmode="numeric" data-wxmt="' + i + '" data-f="tempF" value="' + esc(m.tempF) + '" placeholder="°F" />') +
+        "</div><div>" + field("Wind", '<input data-wxmt="' + i + '" data-f="wind" value="' + esc(m.wind) + '" placeholder="e.g. S 10 mph" />') +
+        "</div></div></div>";
+    }).join("") + "</div>";
 }
 
 function slotHtml(slot) {
@@ -822,10 +900,13 @@ function slotHtml(slot) {
   if (!slot || slot.status === "later") return '<div class="wx-col"><div class="wx-time">' + label + '</div><div class="wx-cond">Later today.</div></div>';
   if (slot.status !== "ok") return '<div class="wx-col"><div class="wx-time">' + label + '</div><div class="wx-cond">No reading.</div></div>';
   const temp = slot.tempF === "" || slot.tempF == null ? "—" : slot.tempF + "°";
-  return '<div class="wx-col"><div class="wx-time">' + label + "</div>" + wxSvg(slot.icon) +
+  const meta = slot.src === "manual"
+    ? "Wind " + esc(slot.wind || "—") + "<br><i>Entered on site</i>"
+    : "Precip " + esc(slot.precip || "—") + "<br>Wind " + esc(slot.wind || "—") + "<br>Humidity " + esc(slot.hum || "—");
+  return '<div class="wx-col"><div class="wx-time">' + label + "</div>" + (slot.icon ? wxSvg(slot.icon) : '<div class="wx-ico"></div>') +
     '<div class="wx-temp">' + esc(temp) + "</div>" +
     '<div class="wx-cond">' + esc(slot.cond || "") + "</div>" +
-    '<div class="wx-meta">Precip ' + esc(slot.precip || "—") + "<br>Wind " + esc(slot.wind || "—") + "<br>Humidity " + esc(slot.hum || "—") + "</div></div>";
+    '<div class="wx-meta">' + meta + "</div></div>";
 }
 
 function weatherCard(r) {
@@ -835,24 +916,26 @@ function weatherCard(r) {
     field("State", '<input data-k="jobState" value="' + esc(r.jobState || "") + '" maxlength="2" autocapitalize="characters" placeholder="TX" />') +
     "</div></div>";
   const hasCity = !!String(r.jobCity || "").trim() && String(r.jobState || "").trim().length >= 2;
-  const hasSlots = !!(r.wx && r.wx.placeKey === placeKey(r) && Array.isArray(r.wx.slots) && r.wx.slots.length);
-  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  const dateOk = weatherDateOk(r.date);
+  const slots = effSlots(r);
+  const anyOk = slots.some((x) => x.status === "ok");
+  const missing = slots.some((x) => x.status === "miss" || (x.status === "ok" && x.tempF === ""));
   let body = "";
-  if (!weatherDateOk(r.date)) {
-    body = '<p class="hint">Observed weather is only available for the last 7 days. Enter it below.</p>' + weatherManual(r);
-  } else {
-    body = '<button type="button" class="btn btn-outline" data-act="wxrefresh"' + (wxLoading ? " disabled" : "") + ">" +
+  if (dateOk) {
+    body += '<button type="button" class="btn btn-outline" data-act="wxrefresh"' + (wxLoading ? " disabled" : "") + ">" +
       (wxLoading ? '<i class="spin"></i> Loading weather…' : "Refresh weather") + "</button>";
-    if (wxError) body += '<p class="hint">' + esc(wxError) + "</p>";
-    else if (offline && hasCity && !hasSlots) body += '<p class="hint">Weather unavailable. No signal.</p>';
-    if (!hasCity) body += '<p class="hint">Enter the job city and state.</p>';
-    if (hasSlots) {
-      body += '<div class="wx-grid">' + r.wx.slots.map(slotHtml).join("") + "</div>";
-      if (r.wx.station) body += '<p class="wx-src">Source: National Weather Service · ' + esc(r.wx.station) + " " + esc(r.wx.stationName || "") + "</p>";
-    }
-    if (wxError || wxManualOpen || (offline && hasCity && !hasSlots)) body += weatherManual(r);
-    else if (hasSlots) body += '<button type="button" class="btn btn-ghost" data-act="wxmanual">Enter weather manually</button>';
+  } else {
+    body += '<p class="hint">Live weather is only available for the last 7 days. Enter it below.</p>';
   }
+  if (wxError) body += '<p class="hint wx-err">' + esc(wxError) + "</p>";
+  if (!hasCity) body += '<p class="hint">Enter the job city and state.</p>';
+  if (anyOk || (r.wx && r.wx.placeKey === placeKey(r))) {
+    body += '<div class="wx-grid">' + slots.map(slotHtml).join("") + "</div>";
+    if (anyOk) body += '<p class="wx-src">' + esc(weatherSource(r)) + "</p>";
+  }
+  const showEditor = wxManualOpen || !!wxError || !dateOk || missing || (hasCity && !anyOk && !wxLoading);
+  if (showEditor) body += manualEditor(r);
+  else if (anyOk) body += '<button type="button" class="btn btn-ghost" data-act="wxmanual">Enter weather by hand</button>';
   return '<div class="card"><h2>Weather</h2>' + cityRow + body +
     ynRow("Did weather affect work today?", "weatherImpact", r.weatherImpact || "") +
     (r.weatherImpact === "yes" ? field("Explain", ta("weatherImpactExplain", r.weatherImpactExplain, "How did weather affect the work")) : "") +
@@ -1122,6 +1205,31 @@ function bind() {
     patch({ [b.getAttribute("data-yn")]: b.getAttribute("data-v") });
     render();
   }));
+  document.querySelectorAll("[data-wxm]").forEach((b) => b.addEventListener("click", () => {
+    const i = Number(b.getAttribute("data-wxm"));
+    const icon = b.getAttribute("data-icon");
+    const r = active();
+    if (!r) return;
+    const m = normManual(r.wxManual);
+    wxManualOpen = true;
+    m[i].icon = m[i].icon === icon ? "" : icon;
+    patch({ wxManual: m });
+    render();
+  }));
+  document.querySelectorAll("[data-wxmt]").forEach((el) => el.addEventListener("input", () => {
+    const i = Number(el.getAttribute("data-wxmt"));
+    const f = el.getAttribute("data-f");
+    const r = active();
+    if (!r) return;
+    const m = normManual(r.wxManual);
+    wxManualOpen = true;
+    m[i][f] = f === "tempF" ? String(el.value || "").replace(/[^0-9-]/g, "").slice(0, 4) : el.value;
+    if (f === "tempF" && el.value !== m[i][f]) el.value = m[i][f];
+    patch({ wxManual: m });
+  }));
+  document.querySelectorAll("[data-wxmt]").forEach((el) => el.addEventListener("blur", () => {
+    setTimeout(() => { const a = document.activeElement; if (!a || !a.getAttribute || a.getAttribute("data-wxmt") == null) render(); }, 0);
+  }));
   document.querySelectorAll("[data-wx]").forEach((b) => b.addEventListener("click", () => {
     const name = b.getAttribute("data-wx");
     const r = active();
@@ -1262,6 +1370,8 @@ function openReport(id) {
   screen = "wizard";
   step = 0;
   askSent = false;
+  wxManualOpen = false;
+  wxError = "";
   render();
 }
 
@@ -1472,9 +1582,9 @@ function reportText(r) {
   const st = String(r.jobState || "").trim().toUpperCase();
   const locLine = city ? "Job location: " + city + (st ? ", " + st : "") : "";
   let weatherLines;
-  if (wxReady(r)) {
-    weatherLines = ["Observed weather (National Weather Service · station " + (r.wx.station || "") + " " + (r.wx.stationName || "") + "):"];
-    (r.wx.slots || []).forEach((s) => {
+  if (hasWeatherStrip(r)) {
+    weatherLines = ["Weather — " + weatherSource(r)];
+    effSlots(r).forEach((s) => {
       if (!s) return;
       if (s.status === "later") weatherLines.push("  " + s.t + ": Later today.");
       else if (s.status !== "ok") weatherLines.push("  " + s.t + ": No reading.");
@@ -1804,7 +1914,7 @@ async function buildPdf(r) {
   doc.rect(0, 78, pageW, 3, "F");
 
   y = 88;
-  const hasWx = wxReady(r);
+  const hasWx = hasWeatherStrip(r);
   let info;
   if (hasWx) {
     const city = String(r.jobCity || "").trim();
@@ -1831,7 +1941,7 @@ async function buildPdf(r) {
     const city = String(r.jobCity || "").trim();
     const st = String(r.jobState || "").trim().toUpperCase();
     const place = city ? city + (st ? ", " + st : "") : "";
-    paintBar("Weather · " + place, false);
+    paintBar(place ? "Weather · " + place : "Weather", false);
     const boxTop = y;
     const boxH = 74;
     const colW = contentW / 3;
@@ -1839,17 +1949,17 @@ async function buildPdf(r) {
     doc.setDrawColor(LINE[0], LINE[1], LINE[2]);
     doc.setLineWidth(0.7);
     doc.rect(margin, boxTop, contentW, boxH, "FD");
-    const slots = Array.isArray(r.wx.slots) ? r.wx.slots : [];
+    const slots = effSlots(r);
     for (let i = 0; i < 3; i += 1) {
       const slot = slots[i] || blankSlot(SLOT_TIMES[i].t, "miss", "No reading.");
       const x = margin + i * colW;
       const ix = x + 26;
-      const iy = boxTop + 24;
+      const iy = boxTop + 20;
       if (slot.status === "ok" && slot.icon) drawWxIcon(doc, slot.icon, ix, iy);
       doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
       doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
-      doc.text(String(slot.t || ""), ix, boxTop + 50, { align: "center" });
+      doc.text(String(slot.t || ""), ix, boxTop + 59, { align: "center" });
       const tx = x + 48;
       const textW = colW - 56;
       if (slot.status !== "ok") {
@@ -1872,11 +1982,13 @@ async function buildPdf(r) {
         doc.setFont("helvetica", "normal");
         doc.setFontSize(7.5);
         doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
-        const meta = [
-          "Precipitation  " + (slot.precip || "—"),
-          "Wind  " + (slot.wind || "—"),
-          "Humidity  " + (slot.hum || "—"),
-        ];
+        const meta = slot.src === "manual"
+          ? ["Wind  " + (slot.wind || "—"), "Entered on site"]
+          : [
+            "Precipitation  " + (slot.precip || "—"),
+            "Wind  " + (slot.wind || "—"),
+            "Humidity  " + (slot.hum || "—"),
+          ];
         meta.forEach((line, mi) => doc.text(line, tx, boxTop + 50 + mi * 8));
       }
     }
@@ -1890,7 +2002,7 @@ async function buildPdf(r) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7);
     doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
-    const src = "Source: National Weather Service · Station " + (r.wx.station || "") + " (" + (r.wx.stationName || "") + ") · observed readings";
+    const src = weatherSource(r);
     const srcLines = doc.splitTextToSize(src, contentW - 12);
     srcLines.forEach((line) => {
       doc.text(line, margin + contentW / 2, y, { align: "center" });
