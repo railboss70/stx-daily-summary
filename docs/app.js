@@ -39,6 +39,14 @@ const CLOSEOUT = [
   ["jobsiteClean", "Jobsite clean", "Jobsite clean"],
   ["materialsSecured", "Materials stored clear of track", "Materials clear of track"],
 ];
+const PDF_DENSITY = [
+  { font: 9, lh: 11, bar: 14, head: 13, row: 14, gap: 4, sum: 15, tot: 16, safe: 15, sig: 58, sl: 36, ss: 1,
+    wx: { h: 74, iy: 20, tl: 59, tf: 20, temp: 26, cond: 38, m0: 50, ms: 8, src: 11 } },
+  { font: 8.5, lh: 10.2, bar: 13, head: 12, row: 13, gap: 3, sum: 13.5, tot: 14, safe: 13.5, sig: 50, sl: 31, ss: 0.85,
+    wx: { h: 64, iy: 18, tl: 53, tf: 18, temp: 24, cond: 34, m0: 44, ms: 7.5, src: 10 } },
+  { font: 8, lh: 9.4, bar: 12, head: 11, row: 12, gap: 2, sum: 12, tot: 12.5, safe: 12.5, sig: 44, sl: 27, ss: 0.72,
+    wx: { h: 58, iy: 17, tl: 49, tf: 16, temp: 22, cond: 31, m0: 40, ms: 7, src: 9 } },
+];
 const emptyRow = {
   received: () => ({ id: uid(), description: "", qty: "", uom: "", bolFiled: "" }),
   consumed: () => ({ id: uid(), description: "", qty: "", uom: "" }),
@@ -107,6 +115,7 @@ function blankReport(settings) {
     recipientEmail: s.defaultEmail || DEFAULT_EMAIL,
     pdfTitle: "",
     pdfTitleCustom: false,
+    layout: Object.assign({ size: "auto", ppp: 1 }, s.lastLayout || {}),
   };
 }
 
@@ -331,12 +340,13 @@ async function load() {
             id: photo.id,
             caption: photo.caption || "",
             takenAt: photo.takenAt || new Date().toISOString(),
+            ...(photo.skip ? { skip: true } : {}),
           });
         } catch (err) {
           nextPhotos.push(photo);
         }
       } else {
-        nextPhotos.push({ id: photo.id, caption: photo.caption || "", takenAt: photo.takenAt || "" });
+        nextPhotos.push({ id: photo.id, caption: photo.caption || "", takenAt: photo.takenAt || "", ...(photo.skip ? { skip: true } : {}) });
       }
     }
     r.photos = nextPhotos;
@@ -502,7 +512,7 @@ function wizardHtml() {
     '<div class="nav"><button class="btn btn-ghost" data-act="' + (step === 0 ? "home" : "back") + '">' + (step === 0 ? "Home" : "Back") + "</button>" +
     (step < STEPS.length - 1
       ? '<button class="btn btn-navy" data-act="next">Next</button>'
-      : '<button class="btn btn-gold" data-act="send" disabled>Preparing…</button>') +
+      : '<button class="btn btn-gold" data-act="preview">Preview PDF</button>') +
     "</div></main>";
 }
 
@@ -1098,17 +1108,29 @@ function stepHtml(r) {
     "<label>Signature</label>" +
     '<canvas class="sig" id="sig"></canvas>' +
     '<button class="btn btn-ghost" data-act="clearsig">Clear signature</button></div>' +
-    '<div class="card">' +
-    '<p class="hint">Share the PDF (and photos) to Mail so it lands at the office. On iPhone use the Mail app, not a browser tab.</p>' +
-    '<button class="btn btn-outline" data-act="preview">Preview PDF</button>' +
-    '<button class="btn btn-gold" data-act="send" data-share="1" disabled>Preparing…</button>' +
-    '<button class="btn btn-ghost" data-act="pdf">Download PDF only</button></div>' +
-    (askSent
-      ? '<div class="card"><h2>Did the email go out?</h2>' +
-        '<p class="hint">Only mark it sent after the office actually gets it.</p>' +
-        '<button class="btn btn-navy" data-act="sent-yes">Yes, mark sent</button>' +
-        '<button class="btn btn-ghost" data-act="sent-no">Not yet</button></div>'
-      : "");
+    layoutCard(r);
+}
+
+function layoutCard(r) {
+  const L = layoutOf(r);
+  const seg = (attr, cur, opts) => '<div class="seg">' + opts.map((o) =>
+    '<button type="button" data-' + attr + '="' + o[0] + '" class="' + (String(cur) === String(o[0]) ? "on" : "") + '">' + o[1] + "</button>").join("") + "</div>";
+  const photos = r.photos || [];
+  return '<div class="card"><h2>Report layout</h2>' +
+    "<label>Text size</label>" +
+    seg("lsize", L.size, [["auto", "Auto-fit"], [0, "Normal"], [1, "Compact"], [2, "Tight"]]) +
+    '<p class="layout-status" id="layoutStatus">Checking layout…</p>' +
+    '<p class="hint">Auto-fit shrinks the text just enough to keep the report on one page.</p>' +
+    (photos.length
+      ? "<label>Photos per page</label>" + seg("lppp", L.ppp, [[1, "1 per page"], [2, "2 per page"]]) +
+        "<label>Photos in the report</label>" +
+        '<div class="ph-list">' + photos.map((p, i) => '<button type="button" class="ph-item' + (p.skip ? " off" : "") + '" data-photoskip="' + esc(p.id) + '">' +
+          '<img data-photo="' + esc(p.id) + '" alt="Photo ' + (i + 1) + '" /><span>' + (p.skip ? "Left off" : "Included") + "</span></button>").join("") + "</div>" +
+        '<p class="hint">Tap a photo to leave it off the report.</p>'
+      : "") +
+    "</div>" +
+    '<p class="hint" style="text-align:center">Tap <b>Preview PDF</b>, then use Share in the preview to email it. The office email is copied so you can paste it.</p>' +
+    '<button class="btn btn-ghost" data-act="sent-yes">Mark as sent</button>';
 }
 
 function subsCard(r) {
@@ -1275,6 +1297,28 @@ function bind() {
     render();
     const next = document.querySelector('[data-row="summaryLines"][data-id="' + fresh.id + '"]');
     if (next) next.focus();
+  }));
+  const setLayout = (change) => {
+    const r = active();
+    if (!r) return;
+    const L = Object.assign({}, layoutOf(r), change);
+    store.settings.lastLayout = L;
+    patch({ layout: L });
+    render();
+  };
+  document.querySelectorAll("[data-lsize]").forEach((b) => b.addEventListener("click", () => {
+    const v = b.getAttribute("data-lsize");
+    setLayout({ size: v === "auto" ? "auto" : Number(v) });
+  }));
+  document.querySelectorAll("[data-lppp]").forEach((b) => b.addEventListener("click", () => {
+    setLayout({ ppp: Number(b.getAttribute("data-lppp")) === 2 ? 2 : 1 });
+  }));
+  document.querySelectorAll("[data-photoskip]").forEach((b) => b.addEventListener("click", () => {
+    const id = b.getAttribute("data-photoskip");
+    const r = active();
+    r.photos = r.photos.map((p) => p.id === id ? { ...p, skip: !p.skip } : p);
+    patch({});
+    render();
   }));
   document.querySelectorAll("[data-subrow]").forEach((el) => el.addEventListener("input", () => {
     const r = active();
@@ -1934,7 +1978,10 @@ function drawWxIcon(doc, kind, ix, iy) {
   doc.setLineWidth(0.4);
 }
 
-async function buildPdf(r) {
+async function buildPdfCore(r, opts) {
+  opts = opts || {};
+  const level = Math.max(0, Math.min(2, Number(opts.level) || 0));
+  const D = PDF_DENSITY[level];
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "pt", format: "letter" });
   const NAVY = [12, 35, 64];
@@ -1963,71 +2010,71 @@ async function buildPdf(r) {
   function paintBar(title, continued) {
     const label = String(title).toUpperCase() + (continued ? " (continued)" : "");
     doc.setFillColor(NAVY[0], NAVY[1], NAVY[2]);
-    doc.rect(margin, y, contentW, 14, "F");
+    doc.rect(margin, y, contentW, D.bar, "F");
     doc.setTextColor(255, 252, 245);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8);
-    doc.text(label, margin + 6, y + 10);
+    doc.text(label, margin + 6, y + D.bar - 4);
     doc.setTextColor(INK[0], INK[1], INK[2]);
-    y += 14;
+    y += D.bar;
   }
 
   function writeBody(text) {
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
+    doc.setFontSize(D.font);
     doc.setTextColor(INK[0], INK[1], INK[2]);
     const lines = doc.splitTextToSize(String(text || "—"), contentW - 12);
     lines.forEach((line) => {
-      if (y + 11 > contentBottom) newPage();
-      doc.text(line, margin + 6, y + 9);
-      y += 11;
+      if (y + D.lh > contentBottom) newPage();
+      doc.text(line, margin + 6, y + D.lh - 2);
+      y += D.lh;
     });
-    y += 4;
+    y += D.gap;
   }
 
   function openText(title, text) {
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
+    doc.setFontSize(D.font);
     const lines = doc.splitTextToSize(String(text || "—"), contentW - 12);
-    const follow = Math.min(2, Math.max(lines.length, 1)) * 11 + 2;
-    if (y + 14 + follow > contentBottom) newPage();
+    const follow = Math.min(2, Math.max(lines.length, 1)) * D.lh + 2;
+    if (y + D.bar + follow > contentBottom) newPage();
     paintBar(title, false);
     writeBody(text);
   }
 
   function measureRow(cells, widths) {
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
+    doc.setFontSize(D.font);
     const wrapped = cells.map((cell, i) => doc.splitTextToSize(String(cell == null ? "" : cell), widths[i] - 8));
     let lines = 1;
     wrapped.forEach((w) => { if (w.length > lines) lines = w.length; });
-    return { wrapped: wrapped, h: Math.max(14, lines * 11 + 3) };
+    return { wrapped: wrapped, h: Math.max(D.row, lines * D.lh + 3) };
   }
 
   function paintHead(headers, widths) {
     doc.setFillColor(HEAD[0], HEAD[1], HEAD[2]);
-    doc.rect(margin, y, contentW, 13, "F");
+    doc.rect(margin, y, contentW, D.head, "F");
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8);
     doc.setTextColor(INK[0], INK[1], INK[2]);
     let x = margin;
     headers.forEach((h, i) => {
-      doc.text(String(h), x + 4, y + 9);
+      doc.text(String(h), x + 4, y + D.head - 4);
       x += widths[i];
     });
-    y += 13;
+    y += D.head;
   }
 
   function paintRow(measured, widths) {
     doc.setDrawColor(LINE[0], LINE[1], LINE[2]);
     doc.setLineWidth(0.4);
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
+    doc.setFontSize(D.font);
     doc.setTextColor(INK[0], INK[1], INK[2]);
     let x = margin;
     widths.forEach((w, i) => {
       doc.rect(x, y, w, measured.h);
-      doc.text(measured.wrapped[i], x + 4, y + 11);
+      doc.text(measured.wrapped[i], x + 4, y + D.lh);
       x += w;
     });
     y += measured.h;
@@ -2035,23 +2082,23 @@ async function buildPdf(r) {
 
   function drawTable(title, headers, rows, widths, pre, tail) {
     tail = tail || 0;
-    const preH = pre ? doc.splitTextToSize(String(pre), contentW - 12).length * 11 + 4 : 0;
+    const preH = pre ? doc.splitTextToSize(String(pre), contentW - 12).length * D.lh + 4 : 0;
     if (!rows.length) {
-      if (y + 14 + preH + 16 > contentBottom) newPage();
+      if (y + D.bar + preH + D.row + 2 > contentBottom) newPage();
       paintBar(title, false);
       if (pre) writeBody(pre);
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
+      doc.setFontSize(D.font);
       doc.setTextColor(INK[0], INK[1], INK[2]);
-      doc.text("None", margin + 6, y + 12);
-      y += 18;
+      doc.text("None", margin + 6, y + D.lh + 1);
+      y += D.lh + 7;
       return;
     }
     const measured = rows.map((row) => measureRow(row, widths));
-    const whole = 14 + preH + 13 + measured.reduce((a, m) => a + m.h, 0) + tail;
+    const whole = D.bar + preH + D.head + measured.reduce((a, m) => a + m.h, 0) + tail;
     // Short tables (and their totals) stay on one page; long ones break between rows.
     if (whole <= 260 && y + whole > contentBottom) newPage();
-    else if (y + 14 + preH + 13 + measured[0].h + (rows.length === 1 ? tail : 0) > contentBottom) newPage();
+    else if (y + D.bar + preH + D.head + measured[0].h + (rows.length === 1 ? tail : 0) > contentBottom) newPage();
     paintBar(title, false);
     if (pre) writeBody(pre);
     paintHead(headers, widths);
@@ -2065,7 +2112,7 @@ async function buildPdf(r) {
       }
       paintRow(m, widths);
     });
-    y += 4;
+    y += D.gap;
   }
 
   doc.setFillColor(255, 252, 245);
@@ -2087,7 +2134,7 @@ async function buildPdf(r) {
     doc.text(jn, pageW - margin, 39, { align: "right" });
   }
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
+  doc.setFontSize(D.font);
   doc.text(formatLong(r.date) || r.date || "", pageW - margin, 53, { align: "right" });
   doc.text("Job # " + (r.projectNumber || "—"), pageW - margin, 65, { align: "right" });
   doc.setFillColor(NAVY[0], NAVY[1], NAVY[2]);
@@ -2111,21 +2158,22 @@ async function buildPdf(r) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   const infoLines = doc.splitTextToSize(info, contentW - 12);
-  const infoH = infoLines.length * 11 + 8;
+  const infoH = infoLines.length * D.lh + 8;
   doc.setFillColor(HEAD[0], HEAD[1], HEAD[2]);
   doc.rect(margin, y, contentW, infoH, "F");
   doc.setTextColor(INK[0], INK[1], INK[2]);
-  doc.text(infoLines, margin + 6, y + 12);
-  y += infoH + 6;
+  doc.text(infoLines, margin + 6, y + D.tot - 4);
+  y += infoH + D.gap + 2;
 
   if (hasWx) {
-    if (y + 104 > contentBottom) newPage();
+    const W = D.wx;
+    if (y + D.bar + W.h + 18 > contentBottom) newPage();
     const city = String(r.jobCity || "").trim();
     const st = String(r.jobState || "").trim().toUpperCase();
     const place = city ? city + (st ? ", " + st : "") : "";
     paintBar(place ? "Weather · " + place : "Weather", false);
     const boxTop = y;
-    const boxH = 74;
+    const boxH = W.h;
     const colW = contentW / 3;
     doc.setFillColor(255, 255, 255);
     doc.setDrawColor(LINE[0], LINE[1], LINE[2]);
@@ -2136,31 +2184,31 @@ async function buildPdf(r) {
       const slot = slots[i] || blankSlot(SLOT_TIMES[i].t, "miss", "No reading.");
       const x = margin + i * colW;
       const ix = x + 26;
-      const iy = boxTop + 20;
+      const iy = boxTop + W.iy;
       if (slot.status === "ok" && slot.icon) drawWxIcon(doc, slot.icon, ix, iy);
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(9);
+      doc.setFontSize(D.font);
       doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
-      doc.text(String(slot.t || ""), ix, boxTop + 59, { align: "center" });
+      doc.text(String(slot.t || ""), ix, boxTop + W.tl, { align: "center" });
       const tx = x + 48;
       const textW = colW - 56;
       if (slot.status !== "ok") {
         doc.setFont("helvetica", "bold");
-        doc.setFontSize(9);
+        doc.setFontSize(D.font);
         doc.setTextColor(NAVY[0], NAVY[1], NAVY[2]);
         const msg = slot.status === "later" ? "Later today." : "No reading.";
         doc.text(doc.splitTextToSize(msg, textW), tx, boxTop + 32);
       } else {
         doc.setFont("helvetica", "bold");
-        doc.setFontSize(20);
+        doc.setFontSize(W.tf);
         doc.setTextColor(INK[0], INK[1], INK[2]);
-        doc.text(slot.tempF ? slot.tempF + "\u00B0" : "—", tx, boxTop + 26);
+        doc.text(slot.tempF ? slot.tempF + "\u00B0" : "—", tx, boxTop + W.temp);
         doc.setFontSize(8);
         doc.setTextColor(NAVY[0], NAVY[1], NAVY[2]);
         let cond = String(slot.cond || "");
         const condLines = doc.splitTextToSize(cond, textW);
         if (condLines.length > 1) cond = String(condLines[0]).replace(/\s+\S*$/, "") + "...";
-        doc.text(cond || "—", tx, boxTop + 38);
+        doc.text(cond || "—", tx, boxTop + W.cond);
         doc.setFont("helvetica", "normal");
         doc.setFontSize(7.5);
         doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
@@ -2171,7 +2219,7 @@ async function buildPdf(r) {
             "Wind  " + (slot.wind || "—"),
             "Humidity  " + (slot.hum || "—"),
           ];
-        meta.forEach((line, mi) => doc.text(line, tx, boxTop + 50 + mi * 8));
+        meta.forEach((line, mi) => doc.text(line, tx, boxTop + W.m0 + mi * W.ms));
       }
     }
     doc.setDrawColor(LINE[0], LINE[1], LINE[2]);
@@ -2180,7 +2228,7 @@ async function buildPdf(r) {
     doc.setLineWidth(0.4);
     doc.line(margin + colW, boxTop, margin + colW, boxTop + boxH);
     doc.line(margin + colW * 2, boxTop, margin + colW * 2, boxTop + boxH);
-    y = boxTop + boxH + 11;
+    y = boxTop + boxH + W.src;
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7);
     doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
@@ -2190,7 +2238,7 @@ async function buildPdf(r) {
       doc.text(line, margin + contentW / 2, y, { align: "center" });
       y += 9;
     });
-    y += 4;
+    y += D.gap;
     doc.setLineWidth(0.4);
   }
 
@@ -2198,29 +2246,29 @@ async function buildPdf(r) {
     const items = summaryItems(r);
     const list = items.length ? items : ["—"];
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
+    doc.setFontSize(D.font);
     const rows = list.map((t, i) => {
       const lines = doc.splitTextToSize(String(t), contentW - 30);
-      return { n: items.length ? (i + 1) + "." : "", lines: lines, h: Math.max(15, lines.length * 11 + 4) };
+      return { n: items.length ? (i + 1) + "." : "", lines: lines, h: Math.max(D.sum, lines.length * D.lh + 4) };
     });
     const first = rows[0].h + (rows[1] ? rows[1].h : 0);
-    if (y + 14 + first > contentBottom) newPage();
+    if (y + D.bar + first > contentBottom) newPage();
     paintBar("Summary of work performed", false);
     rows.forEach((row) => {
       if (y + row.h > contentBottom) { newPage(); paintBar("Summary of work performed", true); }
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(9);
+      doc.setFontSize(D.font);
       doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
-      doc.text(row.n, margin + 6, y + 11);
+      doc.text(row.n, margin + 6, y + D.lh);
       doc.setFont("helvetica", "normal");
       doc.setTextColor(INK[0], INK[1], INK[2]);
-      doc.text(row.lines, margin + 24, y + 11);
+      doc.text(row.lines, margin + 24, y + D.lh);
       y += row.h;
       doc.setDrawColor(LINE[0], LINE[1], LINE[2]);
       doc.setLineWidth(0.4);
       doc.line(margin, y, margin + contentW, y);
     });
-    y += 6;
+    y += D.gap + 2;
   })();
 
   let delayText = "No";
@@ -2256,7 +2304,7 @@ async function buildPdf(r) {
   const ordered = named.filter((x) => x.kind !== "equip").concat(named.filter((x) => x.kind === "equip"));
   const crewWidths = [272, 60, 100, 100];
   const crewHeads = ["Class / equipment", "Type", "QTY", "Hours"];
-  const totalsH = (rows) => (rows.length ? (rows.some((x) => x.kind === "equip") ? 36 : 20) : 0);
+  const totalsH = (rows) => (rows.length ? (rows.some((x) => x.kind === "equip") ? D.tot * 2 + D.gap : D.tot + D.gap) : 0);
   drawTable(
     "Manpower and equipment",
     crewHeads,
@@ -2269,24 +2317,24 @@ async function buildPdf(r) {
     const equipRows = rows.filter((x) => x.kind === "equip");
     const totalLines = equipRows.length ? 2 : 1;
     // (drawTable already reserved this space, so this only triggers on very long tables)
-    if (y + totalLines * 16 + 4 > contentBottom) {
+    if (y + totalLines * D.tot + D.gap > contentBottom) {
       newPage();
       paintBar(title, true);
       paintHead(crewHeads, crewWidths);
     }
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(9);
+    doc.setFontSize(D.font);
     doc.setTextColor(INK[0], INK[1], INK[2]);
-    doc.text(label, margin + 6, y + 12);
-    doc.text(String(manHours(rows)), margin + contentW - 6, y + 12, { align: "right" });
-    y += 16;
+    doc.text(label, margin + 6, y + D.tot - 4);
+    doc.text(String(manHours(rows)), margin + contentW - 6, y + D.tot - 4, { align: "right" });
+    y += D.tot;
     if (equipRows.length) {
       doc.setFont("helvetica", "normal");
-      doc.text("Equipment hours", margin + 6, y + 12);
-      doc.text(String(hoursOf(rows, "equip")), margin + contentW - 6, y + 12, { align: "right" });
-      y += 16;
+      doc.text("Equipment hours", margin + 6, y + D.tot - 4);
+      doc.text(String(hoursOf(rows, "equip")), margin + contentW - 6, y + D.tot - 4, { align: "right" });
+      y += D.tot;
     }
-    y += 4;
+    y += D.gap;
   }
   if (ordered.length) drawTotals("Manpower and equipment", ordered, "Total man-hours (employees)");
 
@@ -2315,11 +2363,11 @@ async function buildPdf(r) {
   if (r.incidents === "yes" && String(r.incidentsExplain || "").trim()) notes.push("Incidents: " + String(r.incidentsExplain).trim());
   if (r.nearMiss === "yes" && String(r.nearMissExplain || "").trim()) notes.push("Near misses: " + String(r.nearMissExplain).trim());
   if (r.equipmentIssues === "yes" && String(r.equipmentIssuesExplain || "").trim()) notes.push("Equipment issues: " + String(r.equipmentIssuesExplain).trim());
-  const rowH = 15;
+  const rowH = D.safe;
   const gridRows = Math.ceil(safety.length / 2);
   const gridH = gridRows * rowH;
   const safetyFollow = gridH + (notes.length ? 22 : 0);
-  if (y + 14 + safetyFollow > contentBottom) newPage();
+  if (y + D.bar + safetyFollow > contentBottom) newPage();
   paintBar("Safety and closeout", false);
   const gridTop = y;
   const colW = contentW / 2;
@@ -2334,44 +2382,44 @@ async function buildPdf(r) {
     const x = margin + col * colW;
     const yy = gridTop + row * rowH;
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
+    doc.setFontSize(D.font);
     doc.setTextColor(INK[0], INK[1], INK[2]);
-    doc.text(item[0], x + 6, yy + 10.5);
+    doc.text(item[0], x + 6, yy + D.safe - 4.5);
     const value = yn(item[1]);
     const alert = item[2] && item[1] === item[2];
     doc.setFont("helvetica", "bold");
     if (alert) doc.setTextColor(RED[0], RED[1], RED[2]);
     else if (item[1] === "na") doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
-    doc.text(value, x + colW - 8, yy + 10.5, { align: "right" });
+    doc.text(value, x + colW - 8, yy + D.safe - 4.5, { align: "right" });
   });
-  y = gridTop + gridH + 6;
+  y = gridTop + gridH + D.gap + 2;
   notes.forEach((note) => writeBody(note));
 
-  const blockH = 58;
+  const blockH = D.sig;
   if (y + blockH > contentBottom) newPage();
   const top = y;
   doc.setDrawColor(LINE[0], LINE[1], LINE[2]);
   doc.setLineWidth(0.7);
-  doc.line(margin, top + 36, margin + 200, top + 36);
-  doc.line(margin + 240, top + 36, margin + contentW, top + 36);
+  doc.line(margin, top + D.sl, margin + 200, top + D.sl);
+  doc.line(margin + 240, top + D.sl, margin + contentW, top + D.sl);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
   doc.setTextColor(INK[0], INK[1], INK[2]);
-  doc.text(r.printName || " ", margin, top + 30);
+  doc.text(r.printName || " ", margin, top + D.sl - 6);
   if (r.signatureDataUrl) {
-    try { doc.addImage(r.signatureDataUrl, "PNG", margin + 240, top, 170, 34, undefined, "FAST"); } catch (e) {}
+    try { doc.addImage(r.signatureDataUrl, "PNG", margin + 240, top + D.sl - 34 * D.ss - 2, 170 * D.ss, 34 * D.ss, undefined, "FAST"); } catch (e) {}
   }
   doc.setFont("helvetica", "bold");
   doc.setFontSize(8);
   doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
-  doc.text("PRINT NAME", margin, top + 48);
-  doc.text("SIGNATURE", margin + 240, top + 48);
+  doc.text("PRINT NAME", margin, top + D.sl + 12);
+  doc.text("SIGNATURE", margin + 240, top + D.sl + 12);
   y = top + blockH;
 
   if (r.photosPurged && !(r.photos || []).length) {
     const note = "Photos removed from phone after 14 days (sent copy is on file).";
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
+    doc.setFontSize(D.font);
     const noteLines = doc.splitTextToSize(note, contentW);
     if (y + noteLines.length * 12 + 4 > contentBottom) newPage();
     doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
@@ -2379,15 +2427,53 @@ async function buildPdf(r) {
     y += noteLines.length * 12 + 4;
   }
 
+  const reportPages = doc.getNumberOfPages();
   const photos = [];
-  const srcPhotos = r.photos || [];
+  const srcPhotos = opts.noPhotos ? [] : (r.photos || []).filter((p) => !p.skip);
   for (let i = 0; i < srcPhotos.length; i += 1) {
     const p = srcPhotos[i];
     const dataUrl = await resolvePhoto(p);
     if (!dataUrl) continue;
     photos.push({ caption: p.caption || "", takenAt: p.takenAt || "", dataUrl: dataUrl });
   }
-  photos.forEach((p, i) => {
+  if (opts.ppp === 2) {
+    for (let i = 0; i < photos.length; i += 2) {
+      doc.addPage();
+      doc.setFillColor(NAVY[0], NAVY[1], NAVY[2]);
+      doc.rect(0, 0, pageW, 36, "F");
+      doc.setTextColor(255, 252, 245);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      const range = photos[i + 1] ? (i + 1) + "–" + (i + 2) : String(i + 1);
+      doc.text("Photos " + range + " of " + photos.length + "  ·  Job # " + (r.projectNumber || "—") + "  ·  " + (formatLong(r.date) || r.date), margin, 23);
+      const top0 = 46;
+      const half = (pageH - 40 - top0) / 2;
+      [photos[i], photos[i + 1]].forEach((p, k) => {
+        if (!p) return;
+        let py = top0 + k * half + 14;
+        doc.setTextColor(INK[0], INK[1], INK[2]);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        const capLines = doc.splitTextToSize(String(p.caption || "").trim() || "No description", contentW).slice(0, 2);
+        doc.text(capLines, margin, py);
+        py += capLines.length * 13;
+        const when = formatTaken(p.takenAt);
+        if (when) {
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(9);
+          doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
+          doc.text(when, margin, py);
+          py += 10;
+        }
+        py += 4;
+        const boxH = top0 + (k + 1) * half - py - 8;
+        if (p.dataUrl && boxH > 40) {
+          try { placeFitted(doc, p.dataUrl, margin, py, contentW, boxH); } catch (e) {}
+        }
+      });
+    }
+  }
+  if (opts.ppp !== 2) photos.forEach((p, i) => {
     doc.addPage();
     doc.setFillColor(NAVY[0], NAVY[1], NAVY[2]);
     doc.rect(0, 0, pageW, 36, "F");
@@ -2395,7 +2481,7 @@ async function buildPdf(r) {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(11);
     doc.text(
-      "Photo " + (i + 1) + " of " + photos.length + "  ·  Project # " + (r.projectNumber || "—") + "  ·  " + (formatLong(r.date) || r.date),
+      "Photo " + (i + 1) + " of " + photos.length + "  ·  Job # " + (r.projectNumber || "—") + "  ·  " + (formatLong(r.date) || r.date),
       margin,
       23
     );
@@ -2431,7 +2517,30 @@ async function buildPdf(r) {
     doc.text("STX Corporation — Daily Project Summary", margin, pageH - 22);
     doc.text("Page " + i + " of " + pages, pageW - margin, pageH - 22, { align: "right" });
   }
-  return doc.output("blob");
+  return { blob: doc.output("blob"), reportPages: reportPages, totalPages: pages, level: level };
+}
+
+function layoutOf(r) {
+  const L = (r && r.layout) || {};
+  return { size: (L.size === 0 || L.size === 1 || L.size === 2) ? L.size : "auto", ppp: L.ppp === 2 ? 2 : 1 };
+}
+
+// Auto-fit: try Normal, then Compact, then Tight text until the report (not the
+// photo pages) fits on one page. Photos are left out of the trial runs for speed.
+async function buildReportPdf(r) {
+  const L = layoutOf(r);
+  if (L.size !== "auto") return buildPdfCore(r, { level: L.size, ppp: L.ppp });
+  let best = null;
+  for (let lv = 0; lv <= 2; lv += 1) {
+    const trial = await buildPdfCore(r, { level: lv, noPhotos: true });
+    if (!best || trial.reportPages < best.reportPages) best = trial;
+    if (trial.reportPages === 1) break;
+  }
+  return buildPdfCore(r, { level: best.level, ppp: L.ppp });
+}
+
+async function buildPdf(r) {
+  return (await buildReportPdf(r)).blob;
 }
 
 function downloadBlob(blob, name) {
@@ -2456,38 +2565,63 @@ async function downloadPdf() {
 async function previewPdf() {
   const r = active();
   if (!r) return;
+  if (!String(r.printName || "").trim() || !r.signatureDataUrl) {
+    toast("Print name and signature are required.");
+    if (step !== 6) { step = 6; render(); }
+    return;
+  }
   if (!window.jspdf) { toast("PDF library still loading — try again."); return; }
+  // Copy the office email first, while the tap still counts as a user action.
+  const email = String(r.recipientEmail || DEFAULT_EMAIL).trim();
+  let copyP = null;
+  try { if (navigator.clipboard && navigator.clipboard.writeText) copyP = navigator.clipboard.writeText(email); } catch (e) { copyP = null; }
   const w = window.open("", "_blank");
   try {
     const pack = preparedFiles;
-    const blob = packMatches(pack, r) ? pack.blob : await buildPdf(r);
-    const url = URL.createObjectURL(blob);
+    const blob = packMatches(pack, r) ? pack.blob : (await buildReportPdf(r)).blob;
+    rememberSettings(r);
+    save();
+    const file = new File([blob], fileName(r), { type: "application/pdf" });
+    const url = URL.createObjectURL(file);
     if (w) w.location = url;
     else {
       downloadBlob(blob, fileName(r));
       toast("Preview blocked. PDF downloaded instead.");
     }
+    if (copyP) copyP.then(() => toast("Office email copied. Paste it in To when you share."), () => {});
   } catch (err) {
     if (w && w.close) w.close();
     toast("Could not build the PDF.");
   }
 }
 
+function layoutKey(r) {
+  const L = layoutOf(r);
+  return L.size + "|" + L.ppp + "|" + (r.photos || []).map((p) => (p.skip ? 1 : 0)).join("");
+}
+
+function packStamp(r) {
+  return r.id + "|" + (r.updatedAt || "") + "|" + layoutKey(r) + "|" + (r.wx && r.wx.fetchedAt ? r.wx.fetchedAt : "");
+}
+
 function packMatches(pack, r) {
-  if (!pack || !pack.ready || !pack.blob || !r) return false;
-  const wxStamp = r.wx && r.wx.fetchedAt ? String(r.wx.fetchedAt) : "";
-  return pack.id === r.id
-    && pack.sig === (r.signatureDataUrl || "")
-    && pack.title === String(r.pdfTitle || "")
-    && pack.name === String(r.printName || "")
-    && pack.wx === wxStamp;
+  return !!(pack && pack.ready && pack.blob && r && pack.stamp === packStamp(r));
 }
 
 function setShareBusy(busy) {
-  document.querySelectorAll('[data-act="send"]').forEach((b) => {
-    b.disabled = !!busy;
-    b.textContent = busy ? "Preparing…" : (b.getAttribute("data-share") === "1" ? "Share PDF + photos" : "Send report");
-  });
+  const el = document.getElementById("layoutStatus");
+  if (!el) return;
+  if (busy) { el.className = "layout-status"; el.textContent = "Checking layout…"; return; }
+  const info = preparedFiles && preparedFiles.info;
+  if (!info) { el.className = "layout-status"; el.textContent = ""; return; }
+  const names = ["Normal", "Compact", "Tight"];
+  const photoPages = info.totalPages - info.reportPages;
+  const fits = info.reportPages === 1;
+  el.className = "layout-status " + (fits ? "ok" : "warn");
+  el.textContent = (fits ? "✓ Report fits on 1 page" : "Report runs onto " + info.reportPages + " pages") +
+    " · " + names[info.level] + " text" +
+    (photoPages ? " · plus " + photoPages + " photo page" + (photoPages > 1 ? "s" : "") : "") +
+    (!fits && info.level < 2 ? ". Try Tight." : "");
 }
 
 function queuePrepare() {
@@ -2508,39 +2642,21 @@ async function prepareSendFiles() {
     return;
   }
   const token = ++prepareToken;
-  const sig = r.signatureDataUrl || "";
-  const title = String(r.pdfTitle || "");
-  const name = String(r.printName || "");
-  const wxStamp = r.wx && r.wx.fetchedAt ? String(r.wx.fetchedAt) : "";
-  preparedFiles = { id: r.id, sig: sig, title: title, name: name, wx: wxStamp, token: token, ready: false, blob: null, pdfFile: null, photoFiles: [] };
+  const stamp = packStamp(r);
+  if (preparedFiles && preparedFiles.ready && preparedFiles.stamp === stamp) { setShareBusy(false); return; }
+  preparedFiles = { stamp: stamp, ready: false, blob: null, info: null };
   setShareBusy(true);
   try {
     if (!window.jspdf) throw new Error("pdf");
-    const blob = await buildPdf(r);
+    const info = await buildReportPdf(r);
     if (token !== prepareToken) return;
     const live = active();
-    if (!live || live.id !== r.id || screen !== "wizard" || step !== 6) return;
-    if ((live.signatureDataUrl || "") !== sig || String(live.pdfTitle || "") !== title || String(live.printName || "") !== name) return;
-    const liveWx = live.wx && live.wx.fetchedAt ? String(live.wx.fetchedAt) : "";
-    if (liveWx !== wxStamp) return;
-    const pdfFile = new File([blob], fileName(live), { type: "application/pdf" });
-    const photoFiles = [];
-    const list = live.photos || [];
-    for (let i = 0; i < list.length; i += 1) {
-      if (token !== prepareToken) return;
-      let b = null;
-      try { b = await getPhoto(list[i].id); } catch (e) { b = null; }
-      if (token !== prepareToken) return;
-      if (b) photoFiles.push(new File([b], "job-photo-" + (i + 1) + ".jpg", { type: b.type || "image/jpeg" }));
-    }
-    if (token !== prepareToken) return;
-    const now = active();
-    if (!now || (now.signatureDataUrl || "") !== sig) return;
-    preparedFiles = { id: live.id, sig: sig, title: title, name: name, wx: wxStamp, token: token, ready: true, blob: blob, pdfFile: pdfFile, photoFiles: photoFiles };
+    if (!live || packStamp(live) !== stamp || screen !== "wizard" || step !== 6) return;
+    preparedFiles = { stamp: stamp, ready: true, blob: info.blob, info: info };
     setShareBusy(false);
   } catch (err) {
     if (token !== prepareToken) return;
-    preparedFiles = { id: r.id, sig: sig, title: title, name: name, wx: wxStamp, token: token, ready: false, blob: null, pdfFile: null, photoFiles: [] };
+    preparedFiles = { stamp: stamp, ready: false, blob: null, info: null };
     setShareBusy(false);
   }
 }
