@@ -30,11 +30,22 @@ const formatTaken = (iso) => {
     month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
   });
 };
+const CLOSEOUT = [
+  ["jobBriefing", "Job briefing held", "Job briefing held"],
+  ["siteSecure", "Site secure before leaving", "Site secure"],
+  ["derailsDown", "Derails down", "Derails down"],
+  ["locksRemoved", "All locks removed", "Locks removed"],
+  ["chocks", "Equipment parked with wheel chocks", "Equip. parked w/ chocks"],
+  ["jobsiteClean", "Jobsite clean", "Jobsite clean"],
+  ["materialsSecured", "Materials stored clear of track", "Materials clear of track"],
+];
 const emptyRow = {
   received: () => ({ id: uid(), description: "", qty: "", uom: "", bolFiled: "" }),
   consumed: () => ({ id: uid(), description: "", qty: "", uom: "" }),
   manpower: () => ({ id: uid(), className: "", qty: "", hours: "", kind: "crew" }),
-  sub: () => ({ id: uid(), description: "", hours: "", details: "" }),
+  sub: () => ({ id: uid(), description: "", details: "", crew: [emptyRow.subcrew()] }),
+  subcrew: () => ({ id: uid(), className: "", kind: "crew", qty: "", hours: "" }),
+  line: () => ({ id: uid(), text: "" }),
 };
 
 function freshSettings() {
@@ -45,6 +56,7 @@ function freshSettings() {
     recentProjects: [],
     recentClasses: [],
     projectLocations: {},
+    projectNames: {},
   };
 }
 
@@ -58,8 +70,11 @@ function blankReport(settings) {
     updatedAt: now,
     date: todayISO(),
     projectNumber: s.lastProject || "",
+    jobName: (s.projectNames || {})[s.lastProject] || "",
     printName: s.defaultName || "",
     summary: "",
+    summaryLines: [emptyRow.line()],
+    subsYN: "",
     weather: [],
     tempF: "",
     weatherImpact: "",
@@ -83,6 +98,10 @@ function blankReport(settings) {
     siteSecure: "",
     derailsDown: "",
     locksRemoved: "",
+    jobBriefing: "",
+    chocks: "",
+    jobsiteClean: "",
+    materialsSecured: "",
     photos: [],
     signatureDataUrl: "",
     recipientEmail: s.defaultEmail || DEFAULT_EMAIL,
@@ -195,6 +214,33 @@ function normalizeRecent(list) {
   return out;
 }
 
+function syncSummary(r) {
+  r.summary = (r.summaryLines || []).map((l) => String((l && l.text) || "").trim()).filter(Boolean).join("\n");
+}
+
+function summaryItems(r) {
+  return (r.summaryLines || []).map((l) => String((l && l.text) || "").trim()).filter(Boolean);
+}
+
+function rememberJobName(r) {
+  const proj = String((r && r.projectNumber) || "").trim();
+  const name = String((r && r.jobName) || "").trim();
+  if (!proj || !name) return;
+  if (!store.settings.projectNames || typeof store.settings.projectNames !== "object") store.settings.projectNames = {};
+  store.settings.projectNames[proj] = name;
+}
+
+function applySavedJobName() {
+  const r = active();
+  if (!r) return;
+  const name = (store.settings.projectNames || {})[String(r.projectNumber || "").trim()];
+  if (name && !String(r.jobName || "").trim()) { r.jobName = name; save(); }
+}
+
+function subsOn(r) {
+  return r && r.subsYN === "yes";
+}
+
 function fillReport(r) {
   if (!Array.isArray(r.photos)) r.photos = [];
   if (!Array.isArray(r.received) || !r.received.length) r.received = [emptyRow.received()];
@@ -209,6 +255,23 @@ function fillReport(r) {
   r.jobState = String(r.jobState == null ? "" : r.jobState).replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase();
   if (!r.wx || typeof r.wx !== "object") r.wx = null;
   r.wxManual = normManual(r.wxManual);
+  if (r.jobName == null) r.jobName = "";
+  if (!Array.isArray(r.summaryLines)) {
+    const parts = String(r.summary || "").split(/\n+/).map((t) => t.replace(/^\s*(?:[-•*]|\d+[.)])\s+/, "").trim()).filter(Boolean);
+    r.summaryLines = parts.length ? parts.map((t) => ({ id: uid(), text: t })) : [emptyRow.line()];
+  }
+  if (!r.summaryLines.length) r.summaryLines = [emptyRow.line()];
+  syncSummary(r);
+  r.subcontractors.forEach((sub) => {
+    if (!Array.isArray(sub.crew)) {
+      const h = String(sub.hours == null ? "" : sub.hours).trim();
+      sub.crew = h ? [{ id: uid(), className: "Crew (total hours)", kind: "crew", qty: "1", hours: h }] : [emptyRow.subcrew()];
+    }
+    if (!sub.crew.length) sub.crew = [emptyRow.subcrew()];
+    if (sub.details == null) sub.details = "";
+  });
+  if (r.subsYN == null) r.subsYN = r.subcontractors.some((x) => String(x.description || "").trim()) ? "yes" : "";
+  CLOSEOUT.forEach((c) => { if (r[c[0]] == null) r[c[0]] = ""; });
   if (r.delaysYN == null) r.delaysYN = "";
   if (r.delayHours == null) r.delayHours = "";
   if (r.delays == null) r.delays = "";
@@ -252,6 +315,7 @@ async function load() {
   if (!Array.isArray(store.settings.recentClasses)) store.settings.recentClasses = [];
   store.settings.recentClasses = normalizeRecent(store.settings.recentClasses);
   if (!store.settings.projectLocations || typeof store.settings.projectLocations !== "object") store.settings.projectLocations = {};
+  if (!store.settings.projectNames || typeof store.settings.projectNames !== "object" || Array.isArray(store.settings.projectNames)) store.settings.projectNames = {};
   const reports = Object.values(store.reports);
   for (let i = 0; i < reports.length; i += 1) {
     const r = reports[i];
@@ -323,7 +387,7 @@ function patch(p) {
 }
 
 function markSvg() {
-  return '<div class="logo-chip"><img src="./stx-logo.png" alt="STX Corporation" /></div>';
+  return '<div class="logo-chip"><img src="./stx-logo-v2.png" alt="STX Corporation" /></div>';
 }
 function uomList() {
   return '<datalist id="uom-options"><option value="EA"></option><option value="LF"></option><option value="TF"></option><option value="TN"></option><option value="CY"></option><option value="GAL"></option><option value="BAG"></option><option value="BDL"></option><option value="LB"></option><option value="SF"></option><option value="SY"></option></datalist>';
@@ -368,6 +432,7 @@ function render() {
     const id = prev.getAttribute("data-id");
     const wxm = prev.getAttribute("data-wxmt");
     if (k) focusSel = '[data-k="' + k + '"]';
+    else if (prev.getAttribute("data-subrow") && id && f) focusSel = '[data-subrow="' + prev.getAttribute("data-subrow") + '"][data-id="' + id + '"][data-f="' + f + '"]';
     else if (wxm != null && f) focusSel = '[data-wxmt="' + wxm + '"][data-f="' + f + '"]';
     else if (row && f && id) focusSel = '[data-row="' + row + '"][data-id="' + id + '"][data-f="' + f + '"]';
     if (focusSel && typeof prev.selectionStart === "number") caret = prev.selectionStart;
@@ -949,15 +1014,20 @@ function splitRow(left, right) {
 function stepHtml(r) {
   if (step === 0) {
     return '<div class="card"><h2>Job information</h2>' +
-      field("Date", '<input type="date" data-k="date" value="' + esc(r.date) + '" />') +
-      field("Project number", input("projectNumber", r.projectNumber, 'placeholder="Project number" inputmode="numeric"')) +
+      field("Job name", input("jobName", r.jobName, 'placeholder="e.g. Englewood Yard Tie Program" autocapitalize="words"')) +
+      field("Job number", input("projectNumber", r.projectNumber, 'placeholder="Job number" inputmode="numeric"')) +
       recentChips() +
+      field("Date", '<input type="date" data-k="date" value="' + esc(r.date) + '" />') +
       field("Print name", input("printName", r.printName, 'placeholder="Your name" autocomplete="name" autocapitalize="words"')) +
       "</div>";
   }
   if (step === 1) {
     return '<div class="card"><h2>Summary of work performed</h2>' +
-      ta("summary", r.summary, "Track work, surfacing, tie replacement, welding…") +
+      '<p class="hint">One item per line. Press Enter or tap Add line for the next item.</p>' +
+      r.summaryLines.map((l, i) => '<div class="sline"><span class="snum">' + (i + 1) + ".</span>" +
+        '<input data-row="summaryLines" data-id="' + l.id + '" data-f="text" value="' + esc(l.text) + '" placeholder="' + (i === 0 ? "e.g. Replaced 42 crossties MP 112.4 to 112.9" : "Next item") + '" enterkeyhint="next" />' +
+        '<button type="button" class="sline-x" data-rm="summaryLines" data-id="' + l.id + '" aria-label="Remove line">×</button></div>').join("") +
+      '<button class="btn btn-ghost" data-add="summaryLines">Add line</button>' +
       "</div>" +
       weatherCard(r) +
       '<div class="card"><h2>Delays / interruptions</h2>' +
@@ -990,23 +1060,14 @@ function stepHtml(r) {
         ) +
         "</div></div>").join("") +
       '<button class="btn btn-ghost" data-add="manpower">Add another class / equipment</button></div>' +
-      '<div class="card"><h2>Subcontractors</h2>' +
-      r.subcontractors.map((row) => '<div class="item"><div class="item-top"><span class="muted">Subcontractor</span>' +
-        '<button class="btn btn-danger" style="width:auto;margin:0;padding:6px 10px;font-size:12px" data-rm="subcontractors" data-id="' + row.id + '">Remove</button></div>' +
-        '<input data-row="subcontractors" data-id="' + row.id + '" data-f="description" value="' + esc(row.description) + '" placeholder="Company or crew" />' +
-        '<div class="row"><div>' + field("Hours", '<input inputmode="decimal" data-row="subcontractors" data-id="' + row.id + '" data-f="hours" value="' + esc(row.hours) + '" />') + "</div></div>" +
-        field("Details", '<input data-row="subcontractors" data-id="' + row.id + '" data-f="details" value="' + esc(row.details) + '" placeholder="Work performed" />') +
-        "</div>").join("") +
-      '<button class="btn btn-ghost" data-add="subcontractors">Add subcontractor</button></div>';
+      subsCard(r);
   }
   if (step === 4) {
     return ynCard("Any incidents today?", "incidents", r.incidents, "incidentsExplain", r.incidentsExplain, "yes") +
       ynCard("Any near misses today?", "nearMiss", r.nearMiss, "nearMissExplain", r.nearMissExplain, "yes") +
       ynCard("Any equipment issues today?", "equipmentIssues", r.equipmentIssues, "equipmentIssuesExplain", r.equipmentIssuesExplain, "yes") +
-      '<div class="card"><h2>Before leaving the site</h2>' +
-      ynRow("Site secure before leaving", "siteSecure", r.siteSecure, "no") +
-      ynRow("Derails down", "derailsDown", r.derailsDown, "no") +
-      ynRow("All locks removed", "locksRemoved", r.locksRemoved, "no") +
+      '<div class="card"><h2>Closeout checklist</h2><p class="hint">Use N/A when an item does not apply to this job.</p>' +
+      CLOSEOUT.map((c) => ynaRow(c[1], c[0], r[c[0]] || "")).join("") +
       "</div>";
   }
   if (step === 5) {
@@ -1050,10 +1111,34 @@ function stepHtml(r) {
       : "");
 }
 
+function subsCard(r) {
+  let body = ynRow("Any subcontractors on site today?", "subsYN", r.subsYN || "");
+  if (r.subsYN === "no") body += '<p class="hint">No subcontractors today. This section will be left off the report.</p>';
+  if (r.subsYN === "yes") {
+    body += r.subcontractors.map((sub, si) => '<div class="item sub"><div class="item-top"><span class="muted">Subcontractor ' + (si + 1) + "</span>" +
+      '<button class="btn btn-danger" style="width:auto;margin:0;padding:6px 10px;font-size:12px" data-rm="subcontractors" data-id="' + sub.id + '">Remove</button></div>' +
+      '<input data-row="subcontractors" data-id="' + sub.id + '" data-f="description" value="' + esc(sub.description) + '" placeholder="Company name" autocapitalize="words" />' +
+      field("Work performed", '<input data-row="subcontractors" data-id="' + sub.id + '" data-f="details" value="' + esc(sub.details || "") + '" placeholder="e.g. Thermite welds" />') +
+      '<div class="subcrew-h">Their manpower and equipment</div>' +
+      (sub.crew || []).map((row) => '<div class="subcrew"><div class="item-top"><span class="muted">Class / equipment</span>' +
+        '<button type="button" class="sline-x" data-subrm="' + sub.id + "|" + row.id + '" aria-label="Remove">×</button></div>' +
+        '<input data-subrow="' + sub.id + '" data-id="' + row.id + '" data-f="className" value="' + esc(row.className) + '" placeholder="e.g. Welder, Laborer, Boom truck" autocapitalize="words" />' +
+        subKindToggle(sub.id, row) +
+        splitRow(
+          field("QTY", '<input inputmode="decimal" data-subrow="' + sub.id + '" data-id="' + row.id + '" data-f="qty" value="' + esc(row.qty) + '" />'),
+          field("Hours", '<input inputmode="decimal" data-subrow="' + sub.id + '" data-id="' + row.id + '" data-f="hours" value="' + esc(row.hours) + '" />')
+        ) + "</div>").join("") +
+      '<button class="btn btn-ghost" data-subadd="' + sub.id + '">Add crew or equipment</button></div>').join("") +
+      '<button class="btn btn-outline" data-add="subcontractors">Add another subcontractor</button>';
+  }
+  return '<div class="card"><h2>Subcontractors</h2>' + body + "</div>";
+}
+
 function recentChips() {
   const rec = store.settings.recentProjects || [];
   if (!rec.length) return "";
-  return '<div class="chips">' + rec.map((p) => '<button type="button" class="chip" data-proj="' + esc(p) + '">' + esc(p) + "</button>").join("") + "</div>";
+  const names = store.settings.projectNames || {};
+  return '<div class="chips">' + rec.map((p) => '<button type="button" class="chip" data-proj="' + esc(p) + '">' + esc(p) + (names[p] ? " · " + esc(names[p]) : "") + "</button>").join("") + "</div>";
 }
 function ynCard(title, key, val, explainKey, explain, alertYes) {
   return '<div class="card"><h2>' + title + "</h2>" + ynRow("", key, val, alertYes) +
@@ -1065,6 +1150,19 @@ function ynRow(label, key, val, alertOn) {
   return (label ? "<label>" + label + "</label>" : "") + '<div class="yn">' +
     '<button type="button" data-yn="' + key + '" data-v="yes" class="' + yesOn + '">Yes</button>' +
     '<button type="button" data-yn="' + key + '" data-v="no" class="' + noOn + '">No</button></div>';
+}
+function ynaRow(label, key, val) {
+  const cls = (v) => (val !== v ? "" : (v === "no" ? "on-alert" : v === "na" ? "on-na" : "on"));
+  return "<label>" + label + '</label><div class="yn yn3">' +
+    [["yes", "Yes"], ["no", "No"], ["na", "N/A"]].map((o) =>
+      '<button type="button" data-yn="' + key + '" data-v="' + o[0] + '" class="' + cls(o[0]) + '">' + o[1] + "</button>").join("") +
+    "</div>";
+}
+function subKindToggle(subId, row) {
+  const kind = row.kind === "equip" ? "equip" : "crew";
+  return '<div class="kind">' +
+    '<button type="button" data-subkind="' + subId + "|" + row.id + '" data-v="crew" class="' + (kind === "crew" ? "on" : "") + '">Crew</button>' +
+    '<button type="button" data-subkind="' + subId + "|" + row.id + '" data-v="equip" class="' + (kind === "equip" ? "on" : "") + '">Equipment</button></div>';
 }
 function kindToggle(row) {
   const kind = row.kind === "equip" ? "equip" : "crew";
@@ -1136,7 +1234,8 @@ function bind() {
     if (r && !r.pdfTitleCustom && (k === "date" || k === "projectNumber" || k === "printName")) {
       patch({ pdfTitle: autoTitle(r) });
     }
-    if (k === "projectNumber") applySavedLocation();
+    if (k === "projectNumber") { applySavedLocation(); applySavedJobName(); }
+    if (k === "jobName" || k === "projectNumber") { rememberJobName(active()); save(); }
     if ((k === "jobCity" || k === "jobState" || k === "date") && r) {
       if (r.wx && r.wx.placeKey !== placeKey(r)) {
         r.wx = null;
@@ -1161,15 +1260,73 @@ function bind() {
     const f = el.getAttribute("data-f");
     const r = active();
     r[key] = r[key].map((row) => row.id === id ? { ...row, [f]: el.value } : row);
+    if (key === "summaryLines") syncSummary(r);
     patch({});
+  }));
+  document.querySelectorAll('[data-row="summaryLines"]').forEach((el) => el.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const r = active();
+    const id = el.getAttribute("data-id");
+    const idx = r.summaryLines.findIndex((l) => l.id === id);
+    const fresh = emptyRow.line();
+    r.summaryLines.splice(idx + 1, 0, fresh);
+    save();
+    render();
+    const next = document.querySelector('[data-row="summaryLines"][data-id="' + fresh.id + '"]');
+    if (next) next.focus();
+  }));
+  document.querySelectorAll("[data-subrow]").forEach((el) => el.addEventListener("input", () => {
+    const r = active();
+    const sub = r.subcontractors.find((x) => x.id === el.getAttribute("data-subrow"));
+    if (!sub) return;
+    const id = el.getAttribute("data-id");
+    const f = el.getAttribute("data-f");
+    sub.crew = sub.crew.map((row) => row.id === id ? { ...row, [f]: el.value } : row);
+    patch({});
+  }));
+  document.querySelectorAll("[data-subkind]").forEach((b) => b.addEventListener("click", () => {
+    const parts = b.getAttribute("data-subkind").split("|");
+    const r = active();
+    const sub = r.subcontractors.find((x) => x.id === parts[0]);
+    if (!sub) return;
+    const kind = b.getAttribute("data-v") === "equip" ? "equip" : "crew";
+    sub.crew = sub.crew.map((row) => row.id === parts[1] ? { ...row, kind: kind } : row);
+    save();
+    render();
+  }));
+  document.querySelectorAll("[data-subadd]").forEach((b) => b.addEventListener("click", () => {
+    const r = active();
+    const sub = r.subcontractors.find((x) => x.id === b.getAttribute("data-subadd"));
+    if (!sub) return;
+    const fresh = emptyRow.subcrew();
+    sub.crew = sub.crew.concat([fresh]);
+    save();
+    render();
+    const el = document.querySelector('[data-subrow="' + sub.id + '"][data-id="' + fresh.id + '"][data-f="className"]');
+    if (el) el.focus();
+  }));
+  document.querySelectorAll("[data-subrm]").forEach((b) => b.addEventListener("click", () => {
+    const parts = b.getAttribute("data-subrm").split("|");
+    const r = active();
+    const sub = r.subcontractors.find((x) => x.id === parts[0]);
+    if (!sub) return;
+    sub.crew = sub.crew.length <= 1 ? [emptyRow.subcrew()] : sub.crew.filter((row) => row.id !== parts[1]);
+    save();
+    render();
   }));
   document.querySelectorAll("[data-add]").forEach((b) => b.addEventListener("click", () => {
     const key = b.getAttribute("data-add");
     const r = active();
-    const maker = key === "manpower" ? emptyRow.manpower : key === "subcontractors" ? emptyRow.sub : key === "consumed" ? emptyRow.consumed : emptyRow.received;
+    const maker = key === "manpower" ? emptyRow.manpower : key === "subcontractors" ? emptyRow.sub : key === "summaryLines" ? emptyRow.line : key === "consumed" ? emptyRow.consumed : emptyRow.received;
     r[key] = r[key].concat([maker()]);
     save();
     render();
+    if (key === "summaryLines") {
+      const inputs = document.querySelectorAll('[data-row="summaryLines"]');
+      const last = inputs[inputs.length - 1];
+      if (last) last.focus();
+    }
     if (key === "manpower") {
       const inputs = document.querySelectorAll('[data-row="manpower"][data-f="className"]');
       const last = inputs[inputs.length - 1];
@@ -1180,8 +1337,9 @@ function bind() {
     const key = b.getAttribute("data-rm");
     const id = b.getAttribute("data-id");
     const r = active();
-    const blank = key === "manpower" ? emptyRow.manpower : key === "subcontractors" ? emptyRow.sub : key === "consumed" ? emptyRow.consumed : emptyRow.received;
+    const blank = key === "manpower" ? emptyRow.manpower : key === "subcontractors" ? emptyRow.sub : key === "summaryLines" ? emptyRow.line : key === "consumed" ? emptyRow.consumed : emptyRow.received;
     r[key] = r[key].length <= 1 ? r[key].map((row) => row.id === id ? blank() : row) : r[key].filter((row) => row.id !== id);
+    if (key === "summaryLines") syncSummary(r);
     save();
     render();
   }));
@@ -1199,6 +1357,8 @@ function bind() {
     const r = active();
     if (r && !r.pdfTitleCustom) patch({ pdfTitle: autoTitle(r) });
     applySavedLocation();
+    const savedName = (store.settings.projectNames || {})[String(r.projectNumber || "").trim()];
+    if (savedName) patch({ jobName: savedName });
     render();
   }));
   document.querySelectorAll("[data-yn]").forEach((b) => b.addEventListener("click", () => {
@@ -1312,8 +1472,8 @@ function onAct(e) {
 
 function jobOk() {
   const r = active();
-  if (!r || !String(r.projectNumber || "").trim() || !String(r.printName || "").trim()) {
-    toast("Project number and name are required.");
+  if (!r || !String(r.jobName || "").trim() || !String(r.projectNumber || "").trim() || !String(r.printName || "").trim()) {
+    toast("Job name, job number, and your name are required.");
     return false;
   }
   return true;
@@ -1341,6 +1501,7 @@ function start(fromLast, forceNew) {
     const last = items[0];
     if (last) {
       r.projectNumber = last.projectNumber;
+      r.jobName = last.jobName || (store.settings.projectNames || {})[String(last.projectNumber || "").trim()] || "";
       r.printName = last.printName || store.settings.defaultName;
       r.recipientEmail = last.recipientEmail || store.settings.defaultEmail;
       const proj = String(last.projectNumber || "").trim();
@@ -1552,7 +1713,7 @@ function setupSig(clear) {
   sigHandlers = { canvas: canvas, start: start, move: move, end: end };
 }
 
-function yn(v) { return v === "yes" ? "YES" : v === "no" ? "NO" : "—"; }
+function yn(v) { return v === "yes" ? "YES" : v === "no" ? "NO" : v === "na" ? "N/A" : "—"; }
 
 function hoursOf(rows, kind) {
   let sum = 0;
@@ -1576,7 +1737,12 @@ function reportText(r) {
   const named = r.manpower.filter((x) => String(x.className || "").trim());
   const ordered = named.filter((x) => x.kind !== "equip").concat(named.filter((x) => x.kind === "equip"));
   const crew = ordered.map((x) => "  • " + x.className + " (" + (x.kind === "equip" ? "Equip" : "Crew") + ")  qty " + (x.qty || "—") + "  hrs " + (x.hours || "—")).join("\n");
-  const subs = r.subcontractors.filter((x) => String(x.description || "").trim()).map((x) => "  • " + x.description + "  hrs " + (x.hours || "—") + (x.details ? "\n    " + x.details : "")).join("\n");
+  const subs = subsOn(r) ? r.subcontractors.filter((x) => String(x.description || "").trim()).map((x) => {
+    const rows = (x.crew || []).filter((c) => String(c.className || "").trim());
+    return "  • " + x.description + (x.details ? " — " + x.details : "") +
+      rows.map((c) => "\n      " + c.className + " (" + (c.kind === "equip" ? "Equip" : "Crew") + ")  qty " + (c.qty || "—") + "  hrs " + (c.hours || "—")).join("") +
+      (rows.length ? "\n      Subcontractor man-hours: " + manHours(rows) : "");
+  }).join("\n") : "";
   const weather = (r.weather || []).join(", ") || "—";
   const city = String(r.jobCity || "").trim();
   const st = String(r.jobState || "").trim().toUpperCase();
@@ -1603,11 +1769,12 @@ function reportText(r) {
   return [
     "STX CORPORATION — DAILY PROJECT SUMMARY",
     "Date: " + (formatLong(r.date) || r.date),
-    "Project #: " + (r.projectNumber || "—"),
+    "Job: " + (String(r.jobName || "").trim() || "—"),
+    "Job #: " + (r.projectNumber || "—"),
     "Supervisor: " + (r.printName || "—"),
     locLine,
     ...weatherLines,
-    "", "SUMMARY OF WORK PERFORMED", String(r.summary || "").trim() || "—",
+    "", "SUMMARY OF WORK PERFORMED", summaryItems(r).map((t, i) => "  " + (i + 1) + ". " + t).join("\n") || "—",
     "", "DELAYS / INTERRUPTIONS", delayLine,
     r.weatherImpact === "yes" ? "WEATHER IMPACT: " + (r.weatherImpactExplain || "Yes") : "",
     "", "RECEIVED AND ACCOUNTED MATERIALS", rec || "  (none)",
@@ -1615,13 +1782,11 @@ function reportText(r) {
     "", "MANPOWER AND EQUIPMENT", crew || "  (none)",
     "Total man-hours (employees): " + manHours(ordered),
     ordered.some((x) => x.kind === "equip") ? "Equipment hours: " + hoursOf(ordered, "equip") : "",
-    "", "SUBCONTRACTORS", subs || "  (none)",
+    subsOn(r) ? "\nSUBCONTRACTORS\n" + (subs || "  (none)") : "",
     "", "Any incidents today: " + yn(r.incidents), r.incidents === "yes" ? r.incidentsExplain : "",
     "Any near misses today: " + yn(r.nearMiss), r.nearMiss === "yes" ? r.nearMissExplain : "",
     "Any equipment issues today: " + yn(r.equipmentIssues), r.equipmentIssues === "yes" ? r.equipmentIssuesExplain : "",
-    "Site secure before leaving: " + yn(r.siteSecure),
-    "Derails down: " + yn(r.derailsDown),
-    "All locks removed: " + yn(r.locksRemoved),
+    ...CLOSEOUT.map((c) => c[1] + ": " + yn(r[c[0]])),
     "", r.photosPurged
       ? "Photos removed from phone after 14 days (sent copy is on file)."
       : "Job photos: " + r.photos.length,
@@ -1646,7 +1811,7 @@ let cachedLogo = null;
 async function loadLogo() {
   if (cachedLogo !== null) return cachedLogo;
   try {
-    const res = await fetch("./stx-logo-pdf.jpg");
+    const res = await fetch("./stx-logo-pdf-v2.jpg");
     const blob = await res.blob();
     cachedLogo = await blobToDataUrl(blob);
   } catch (e) {
@@ -1791,7 +1956,7 @@ async function buildPdf(r) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8);
     doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
-    doc.text("Project # " + (r.projectNumber || "—") + "  ·  " + (formatLong(r.date) || r.date) + "  ·  continued", margin, 22);
+    doc.text((String(r.jobName || "").trim() ? String(r.jobName).trim() + "  ·  " : "") + "Job # " + (r.projectNumber || "—") + "  ·  " + (formatLong(r.date) || r.date) + "  ·  continued", margin, 22);
     y = 34;
   }
 
@@ -1868,10 +2033,13 @@ async function buildPdf(r) {
     y += measured.h;
   }
 
-  function drawTable(title, headers, rows, widths) {
+  function drawTable(title, headers, rows, widths, pre, tail) {
+    tail = tail || 0;
+    const preH = pre ? doc.splitTextToSize(String(pre), contentW - 12).length * 11 + 4 : 0;
     if (!rows.length) {
-      if (y + 14 + 16 > contentBottom) newPage();
+      if (y + 14 + preH + 16 > contentBottom) newPage();
       paintBar(title, false);
+      if (pre) writeBody(pre);
       doc.setFont("helvetica", "normal");
       doc.setFontSize(9);
       doc.setTextColor(INK[0], INK[1], INK[2]);
@@ -1880,12 +2048,17 @@ async function buildPdf(r) {
       return;
     }
     const measured = rows.map((row) => measureRow(row, widths));
-    if (y + 14 + 13 + measured[0].h > contentBottom) newPage();
+    const whole = 14 + preH + 13 + measured.reduce((a, m) => a + m.h, 0) + tail;
+    // Short tables (and their totals) stay on one page; long ones break between rows.
+    if (whole <= 260 && y + whole > contentBottom) newPage();
+    else if (y + 14 + preH + 13 + measured[0].h + (rows.length === 1 ? tail : 0) > contentBottom) newPage();
     paintBar(title, false);
+    if (pre) writeBody(pre);
     paintHead(headers, widths);
     rows.forEach((row, idx) => {
       const m = measured[idx];
-      if (y + m.h > contentBottom && y > 80) {
+      const need = m.h + (idx === rows.length - 1 ? tail : 0);
+      if (y + need > contentBottom && y > 80) {
         newPage();
         paintBar(title, true);
         paintHead(headers, widths);
@@ -1903,11 +2076,20 @@ async function buildPdf(r) {
   doc.setTextColor(NAVY[0], NAVY[1], NAVY[2]);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
-  doc.text("DAILY PROJECT SUMMARY", pageW - margin, 30, { align: "right" });
+  doc.text("DAILY PROJECT SUMMARY", pageW - margin, 25, { align: "right" });
+  const jobName = String(r.jobName || "").trim();
+  if (jobName) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    let jn = jobName;
+    while (jn.length > 4 && doc.getTextWidth(jn) > 290) jn = jn.slice(0, -1);
+    if (jn !== jobName) jn = jn.trim() + "...";
+    doc.text(jn, pageW - margin, 39, { align: "right" });
+  }
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  doc.text(formatLong(r.date) || r.date || "", pageW - margin, 46, { align: "right" });
-  doc.text("Project # " + (r.projectNumber || "—"), pageW - margin, 58, { align: "right" });
+  doc.text(formatLong(r.date) || r.date || "", pageW - margin, 53, { align: "right" });
+  doc.text("Job # " + (r.projectNumber || "—"), pageW - margin, 65, { align: "right" });
   doc.setFillColor(NAVY[0], NAVY[1], NAVY[2]);
   doc.rect(0, 76, pageW, 2, "F");
   doc.setFillColor(196, 154, 54);
@@ -2012,7 +2194,34 @@ async function buildPdf(r) {
     doc.setLineWidth(0.4);
   }
 
-  openText("Summary of work performed", String(r.summary || "").trim() || "—");
+  (function drawSummaryLines() {
+    const items = summaryItems(r);
+    const list = items.length ? items : ["—"];
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    const rows = list.map((t, i) => {
+      const lines = doc.splitTextToSize(String(t), contentW - 30);
+      return { n: items.length ? (i + 1) + "." : "", lines: lines, h: Math.max(15, lines.length * 11 + 4) };
+    });
+    const first = rows[0].h + (rows[1] ? rows[1].h : 0);
+    if (y + 14 + first > contentBottom) newPage();
+    paintBar("Summary of work performed", false);
+    rows.forEach((row) => {
+      if (y + row.h > contentBottom) { newPage(); paintBar("Summary of work performed", true); }
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
+      doc.text(row.n, margin + 6, y + 11);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(INK[0], INK[1], INK[2]);
+      doc.text(row.lines, margin + 24, y + 11);
+      y += row.h;
+      doc.setDrawColor(LINE[0], LINE[1], LINE[2]);
+      doc.setLineWidth(0.4);
+      doc.line(margin, y, margin + contentW, y);
+    });
+    y += 6;
+  })();
 
   let delayText = "No";
   if (r.delaysYN === "yes") {
@@ -2047,68 +2256,78 @@ async function buildPdf(r) {
   const ordered = named.filter((x) => x.kind !== "equip").concat(named.filter((x) => x.kind === "equip"));
   const crewWidths = [272, 60, 100, 100];
   const crewHeads = ["Class / equipment", "Type", "QTY", "Hours"];
+  const totalsH = (rows) => (rows.length ? (rows.some((x) => x.kind === "equip") ? 36 : 20) : 0);
   drawTable(
     "Manpower and equipment",
     crewHeads,
     ordered.map((x) => [x.className, x.kind === "equip" ? "Equip" : "Crew", x.qty || "—", x.hours || "—"]),
-    crewWidths
+    crewWidths,
+    "",
+    totalsH(ordered)
   );
-  if (ordered.length) {
-    const equipRows = ordered.filter((x) => x.kind === "equip");
+  function drawTotals(title, rows, label) {
+    const equipRows = rows.filter((x) => x.kind === "equip");
     const totalLines = equipRows.length ? 2 : 1;
+    // (drawTable already reserved this space, so this only triggers on very long tables)
     if (y + totalLines * 16 + 4 > contentBottom) {
       newPage();
-      paintBar("Manpower and equipment", true);
+      paintBar(title, true);
       paintHead(crewHeads, crewWidths);
     }
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
     doc.setTextColor(INK[0], INK[1], INK[2]);
-    doc.text("Total man-hours (employees)", margin + 6, y + 12);
-    doc.text(String(manHours(ordered)), margin + contentW - 6, y + 12, { align: "right" });
+    doc.text(label, margin + 6, y + 12);
+    doc.text(String(manHours(rows)), margin + contentW - 6, y + 12, { align: "right" });
     y += 16;
     if (equipRows.length) {
       doc.setFont("helvetica", "normal");
       doc.text("Equipment hours", margin + 6, y + 12);
-      doc.text(String(hoursOf(ordered, "equip")), margin + contentW - 6, y + 12, { align: "right" });
+      doc.text(String(hoursOf(rows, "equip")), margin + contentW - 6, y + 12, { align: "right" });
       y += 16;
     }
     y += 4;
   }
+  if (ordered.length) drawTotals("Manpower and equipment", ordered, "Total man-hours (employees)");
 
-  const subs = (r.subcontractors || []).filter((x) => String(x.description || "").trim());
-  drawTable(
-    "Subcontractors",
-    ["Description", "Hours"],
-    subs.map((x) => [x.description + (x.details ? " — " + x.details : ""), x.hours || "—"]),
-    [432, 100]
-  );
+  if (subsOn(r)) {
+    const subList = (r.subcontractors || []).filter((x) => String(x.description || "").trim() || (x.crew || []).some((c) => String(c.className || "").trim()));
+    if (!subList.length) drawTable("Subcontractors", crewHeads, [], crewWidths);
+    subList.forEach((sub) => {
+      const title = "Subcontractor · " + (String(sub.description || "").trim() || "—");
+      const named2 = (sub.crew || []).filter((x) => String(x.className || "").trim());
+      const ord2 = named2.filter((x) => x.kind !== "equip").concat(named2.filter((x) => x.kind === "equip"));
+      const pre = String(sub.details || "").trim() ? "Work performed: " + String(sub.details).trim() : "";
+      drawTable(title, crewHeads, ord2.map((x) => [x.className, x.kind === "equip" ? "Equip" : "Crew", x.qty || "—", x.hours || "—"]), crewWidths, pre, totalsH(ord2));
+      if (ord2.length) drawTotals(title, ord2, "Subcontractor man-hours");
+    });
+    // With subcontractors, Safety and closeout starts page 2. If the subs already
+    // ran onto page 2, Safety simply follows them there.
+    if (doc.getNumberOfPages() === 1) newPage();
+  }
 
   const safety = [
     ["Incidents", r.incidents, "yes"],
     ["Near misses", r.nearMiss, "yes"],
     ["Equipment issues", r.equipmentIssues, "yes"],
-    ["Site secure", r.siteSecure, "no"],
-    ["Derails down", r.derailsDown, "no"],
-    ["Locks removed", r.locksRemoved, "no"],
-  ];
+  ].concat(CLOSEOUT.map((c) => [c[2], r[c[0]], "no"]));
   const notes = [];
   if (r.incidents === "yes" && String(r.incidentsExplain || "").trim()) notes.push("Incidents: " + String(r.incidentsExplain).trim());
   if (r.nearMiss === "yes" && String(r.nearMissExplain || "").trim()) notes.push("Near misses: " + String(r.nearMissExplain).trim());
   if (r.equipmentIssues === "yes" && String(r.equipmentIssuesExplain || "").trim()) notes.push("Equipment issues: " + String(r.equipmentIssuesExplain).trim());
-  const gridH = 48;
+  const rowH = 15;
+  const gridRows = Math.ceil(safety.length / 2);
+  const gridH = gridRows * rowH;
   const safetyFollow = gridH + (notes.length ? 22 : 0);
   if (y + 14 + safetyFollow > contentBottom) newPage();
   paintBar("Safety and closeout", false);
   const gridTop = y;
   const colW = contentW / 2;
-  const rowH = 16;
   doc.setDrawColor(LINE[0], LINE[1], LINE[2]);
   doc.setLineWidth(0.4);
   doc.rect(margin, gridTop, contentW, gridH);
   doc.line(margin + colW, gridTop, margin + colW, gridTop + gridH);
-  doc.line(margin, gridTop + rowH, margin + contentW, gridTop + rowH);
-  doc.line(margin, gridTop + rowH * 2, margin + contentW, gridTop + rowH * 2);
+  for (let gr = 1; gr < gridRows; gr += 1) doc.line(margin, gridTop + rowH * gr, margin + contentW, gridTop + rowH * gr);
   safety.forEach((item, i) => {
     const col = i % 2;
     const row = Math.floor(i / 2);
@@ -2117,12 +2336,13 @@ async function buildPdf(r) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
     doc.setTextColor(INK[0], INK[1], INK[2]);
-    doc.text(item[0], x + 6, yy + 11);
+    doc.text(item[0], x + 6, yy + 10.5);
     const value = yn(item[1]);
     const alert = item[2] && item[1] === item[2];
     doc.setFont("helvetica", "bold");
     if (alert) doc.setTextColor(RED[0], RED[1], RED[2]);
-    doc.text(value, x + colW - 8, yy + 11, { align: "right" });
+    else if (item[1] === "na") doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
+    doc.text(value, x + colW - 8, yy + 10.5, { align: "right" });
   });
   y = gridTop + gridH + 6;
   notes.forEach((note) => writeBody(note));
@@ -2377,6 +2597,7 @@ function sendReport() {
 }
 
 function rememberSettings(r) {
+  rememberJobName(r);
   const custom = [];
   r.manpower.forEach((row) => {
     const name = String(row.className || "").trim();

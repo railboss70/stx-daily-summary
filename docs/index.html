@@ -79,6 +79,15 @@
     .yn { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .yn button { border: 1.5px solid var(--line); background: var(--card); border-radius: 10px; padding: 12px; font-size: 15px; font-weight: 700; color: var(--ink); }
     .yn button.on { background: var(--navy); border-color: var(--navy); color: #fff; }
+    .yn.yn3 { grid-template-columns: 1fr 1fr 1fr; }
+    .yn button.on-na { background: #6b7280; border-color: #6b7280; color: #fff; }
+    .sline { display: grid; grid-template-columns: 22px 1fr 34px; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); padding: 4px 0; }
+    .sline input { border: 0; border-radius: 6px; padding: 10px 6px; background: transparent; }
+    .sline input:focus { background: #fff; outline: 2px solid #9bb3cc; }
+    .snum { font-weight: 800; color: var(--muted); font-size: 14px; text-align: right; }
+    .sline-x { border: 0; background: #f3e0e0; color: var(--danger); border-radius: 8px; width: 30px; height: 30px; font-size: 18px; font-weight: 700; line-height: 1; }
+    .subcrew-h { font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--navy); margin: 12px 0 6px; }
+    .subcrew { border: 1px dashed var(--line); border-radius: 10px; padding: 8px; margin-bottom: 8px; background: #fff; }
     .yn button.on-alert { background: var(--danger); border-color: var(--danger); color: #fff; }
     .kind { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0 2px; }
     .kind button { border: 1.5px solid var(--line); background: var(--card); border-radius: 8px; padding: 8px; font-size: 14px; font-weight: 700; color: var(--ink); }
@@ -116,6 +125,6 @@
       navigator.serviceWorker.register("./sw.js");
     }
   </script>
-  <script src="./app.js?v=10"></script>
+  <script src="./app.js?v=12"></script>
 </body>
 </html>
