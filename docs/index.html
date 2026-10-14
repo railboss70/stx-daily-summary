@@ -90,6 +90,39 @@
     .ph-item img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; display: block; background: #ddd; margin-bottom: 3px; }
     .ph-item.off { border-color: var(--line); color: var(--muted); }
     .ph-item.off img { opacity: .25; }
+    .pg-list { display: grid; gap: 8px; margin-top: 4px; }
+    .pg { border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 6px 8px 8px; }
+    .pg-off { background: #f3f1ea; }
+    .pg-h { font-size: 12px; font-weight: 800; color: var(--navy); margin-bottom: 6px; }
+    .pg-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .pg-thumb { position: relative; border: 2px solid transparent; padding: 0; background: none; border-radius: 8px; }
+    .pg-thumb img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; display: block; background: #ddd; }
+    .pg-thumb span { position: absolute; left: 4px; top: 4px; background: rgba(12,35,64,.85); color: #fff; font-size: 11px; font-weight: 800; border-radius: 6px; padding: 1px 6px; }
+    .pg-thumb.sel { border-color: var(--brass); box-shadow: 0 0 0 2px var(--brass); }
+    .pg-thumb.sel::after { content: "✓"; position: absolute; right: 4px; top: 4px; background: var(--brass); color: #1a1403; font-weight: 900; border-radius: 50%; width: 20px; height: 20px; font-size: 13px; line-height: 20px; text-align: center; }
+    .pg-thumb.off img { opacity: .35; }
+    .pg-bar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(10px + env(safe-area-inset-bottom)); width: min(414px, calc(100% - 16px)); z-index: 30; background: var(--card); border: 1.5px solid var(--navy); border-radius: 14px; padding: 8px 10px 10px; box-shadow: 0 6px 24px rgb(7 21 37 / .35); display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .pg-bar b { grid-column: 1 / -1; font-size: 14px; color: var(--navy); }
+    .pg-spacer { height: 150px; }
+    .pg-bar .btn { margin: 0; padding: 11px 6px; font-size: 14px; }
+    .check-row { display: flex; align-items: center; gap: 10px; width: 100%; border: 1.5px solid var(--line); background: #fff; border-radius: 12px; padding: 12px; font-size: 16px; font-weight: 700; color: var(--ink); text-align: left; }
+    .check-row .box { width: 26px; height: 26px; border: 2px solid var(--navy); border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font-weight: 900; color: #fff; flex: none; }
+    .check-row.on { border-color: var(--navy); }
+    .check-row.on .box { background: var(--navy); }
+    .jha-slot { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-top: 10px; background: #fff; }
+    .jha-h { font-size: 13px; font-weight: 800; color: var(--navy); margin-bottom: 6px; }
+    .jha-thumb { width: 100%; max-height: 260px; object-fit: contain; background: #eee; border-radius: 8px; display: block; }
+    .jha-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .jha-btns .btn { margin-top: 6px; padding: 11px 6px; font-size: 14px; }
+    .jha-btns .btn-danger { grid-column: 1 / -1; }
+    #crop { position: fixed; inset: 0; z-index: 50; background: var(--navy-deep); color: #fff; display: flex; flex-direction: column; padding: calc(10px + env(safe-area-inset-top)) 12px calc(10px + env(safe-area-inset-bottom)); }
+    .crop-top { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+    .crop-top span { font-size: 13px; color: rgba(255,252,245,.75); }
+    .crop-stage { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+    .crop-stage canvas { touch-action: none; border-radius: 6px; }
+    .crop-tools { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+    .crop-tools .btn { font-size: 13px; padding: 10px 4px; }
+    .crop-nav { display: grid; grid-template-columns: 1fr 1.4fr; gap: 8px; }
     .yn.yn3 { grid-template-columns: 1fr 1fr 1fr; }
     .yn button.on-na { background: #6b7280; border-color: #6b7280; color: #fff; }
     .sline { display: grid; grid-template-columns: 22px 1fr 34px; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); padding: 4px 0; }
@@ -136,6 +169,6 @@
       navigator.serviceWorker.register("./sw.js");
     }
   </script>
-  <script src="./app.js?v=13"></script>
+  <script src="./app.js?v=14"></script>
 </body>
 </html>

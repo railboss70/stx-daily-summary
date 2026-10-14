@@ -116,6 +116,7 @@ function blankReport(settings) {
     pdfTitle: "",
     pdfTitleCustom: false,
     layout: Object.assign({ size: "auto", ppp: 1 }, s.lastLayout || {}),
+    jha: { on: false, front: null, back: null },
   };
 }
 
@@ -281,6 +282,7 @@ function fillReport(r) {
   });
   if (r.subsYN == null) r.subsYN = r.subcontractors.some((x) => String(x.description || "").trim()) ? "yes" : "";
   CLOSEOUT.forEach((c) => { if (r[c[0]] == null) r[c[0]] = ""; });
+  if (!r.jha || typeof r.jha !== "object") r.jha = { on: false, front: null, back: null };
   if (r.delaysYN == null) r.delaysYN = "";
   if (r.delayHours == null) r.delayHours = "";
   if (r.delays == null) r.delays = "";
@@ -341,12 +343,13 @@ async function load() {
             caption: photo.caption || "",
             takenAt: photo.takenAt || new Date().toISOString(),
             ...(photo.skip ? { skip: true } : {}),
+            ...(photo.group ? { group: photo.group } : {}),
           });
         } catch (err) {
           nextPhotos.push(photo);
         }
       } else {
-        nextPhotos.push({ id: photo.id, caption: photo.caption || "", takenAt: photo.takenAt || "", ...(photo.skip ? { skip: true } : {}) });
+        nextPhotos.push({ id: photo.id, caption: photo.caption || "", takenAt: photo.takenAt || "", ...(photo.skip ? { skip: true } : {}), ...(photo.group ? { group: photo.group } : {}) });
       }
     }
     r.photos = nextPhotos;
@@ -357,10 +360,13 @@ async function load() {
     if (r.status !== "sent" || !r.sentAt) continue;
     const t = new Date(r.sentAt).getTime();
     if (!Number.isFinite(t) || t >= cutoff) continue;
-    if (!r.photos.length) continue;
+    const jhaIds = jhaBlobIds(r);
+    if (!r.photos.length && !jhaIds.length) continue;
     for (let p = 0; p < r.photos.length; p += 1) await deletePhoto(r.photos[p].id);
+    for (let j = 0; j < jhaIds.length; j += 1) await deletePhoto(jhaIds[j]);
+    if (r.photos.length) r.photosPurged = true;
     r.photos = [];
-    r.photosPurged = true;
+    if (jhaIds.length) r.jha = { on: r.jha.on, front: null, back: null, purged: true };
   }
   save();
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
@@ -1082,7 +1088,7 @@ function stepHtml(r) {
   }
   if (step === 5) {
     const purgedNote = !!r.photosPurged && !(r.photos || []).length;
-    return '<div class="card"><h2>Job photos</h2>' +
+    return jhaCard(r) + '<div class="card"><h2>Job photos</h2>' +
       (purgedNote
         ? '<p class="hint">Photos removed from phone after 14 days (sent copy is on file).</p>'
         : '<p class="hint">Add 3–4 photos. Take a new one or pick from your camera roll, then add a short note on each.</p>') +
@@ -1115,19 +1121,12 @@ function layoutCard(r) {
   const L = layoutOf(r);
   const seg = (attr, cur, opts) => '<div class="seg">' + opts.map((o) =>
     '<button type="button" data-' + attr + '="' + o[0] + '" class="' + (String(cur) === String(o[0]) ? "on" : "") + '">' + o[1] + "</button>").join("") + "</div>";
-  const photos = r.photos || [];
   return '<div class="card"><h2>Report layout</h2>' +
     "<label>Text size</label>" +
     seg("lsize", L.size, [["auto", "Auto-fit"], [0, "Normal"], [1, "Compact"], [2, "Tight"]]) +
     '<p class="layout-status" id="layoutStatus">Checking layout…</p>' +
     '<p class="hint">Auto-fit shrinks the text just enough to keep the report on one page.</p>' +
-    (photos.length
-      ? "<label>Photos per page</label>" + seg("lppp", L.ppp, [[1, "1 per page"], [2, "2 per page"]]) +
-        "<label>Photos in the report</label>" +
-        '<div class="ph-list">' + photos.map((p, i) => '<button type="button" class="ph-item' + (p.skip ? " off" : "") + '" data-photoskip="' + esc(p.id) + '">' +
-          '<img data-photo="' + esc(p.id) + '" alt="Photo ' + (i + 1) + '" /><span>' + (p.skip ? "Left off" : "Included") + "</span></button>").join("") + "</div>" +
-        '<p class="hint">Tap a photo to leave it off the report.</p>'
-      : "") +
+    photoPagesCard(r) +
     "</div>" +
     '<p class="hint" style="text-align:center">Tap <b>Preview PDF</b>, then use Share in the preview to email it. The office email is copied so you can paste it.</p>' +
     '<button class="btn btn-ghost" data-act="sent-yes">Mark as sent</button>';
@@ -1311,7 +1310,48 @@ function bind() {
     setLayout({ size: v === "auto" ? "auto" : Number(v) });
   }));
   document.querySelectorAll("[data-lppp]").forEach((b) => b.addEventListener("click", () => {
-    setLayout({ ppp: Number(b.getAttribute("data-lppp")) === 2 ? 2 : 1 });
+    const r = active();
+    if (!r) return;
+    const v = Number(b.getAttribute("data-lppp"));
+    r.photos.forEach((p) => { p.group = ""; });
+    photoSel = new Set();
+    setLayout({ ppp: v === 2 || v === 4 ? v : 1 });
+  }));
+  document.querySelectorAll("[data-psel]").forEach((b) => b.addEventListener("click", () => {
+    const id = b.getAttribute("data-psel");
+    if (photoSel.has(id)) photoSel.delete(id); else photoSel.add(id);
+    render();
+  }));
+  document.querySelectorAll("[data-pact]").forEach((b) => b.addEventListener("click", () => photoAction(b.getAttribute("data-pact"))));
+  document.querySelectorAll("[data-jhacam]").forEach((b) => b.addEventListener("click", () => {
+    const el = document.querySelector('[data-jhafile="' + b.getAttribute("data-jhacam") + '"]');
+    if (el) el.click();
+  }));
+  document.querySelectorAll("[data-jhalib]").forEach((b) => b.addEventListener("click", () => {
+    const el = document.querySelector('[data-jhafilelib="' + b.getAttribute("data-jhalib") + '"]');
+    if (el) el.click();
+  }));
+  document.querySelectorAll("[data-jhafile],[data-jhafilelib]").forEach((el) => el.addEventListener("change", () => {
+    const slot = el.getAttribute("data-jhafile") || el.getAttribute("data-jhafilelib");
+    const file = el.files && el.files[0];
+    el.value = "";
+    if (file) onJhaFile(slot, file);
+  }));
+  document.querySelectorAll("[data-jhacrop]").forEach((b) => b.addEventListener("click", () => {
+    const r = active();
+    const k = b.getAttribute("data-jhacrop");
+    const cur = r && r.jha && r.jha[k];
+    if (cur && cur.origId) openCrop(k, cur.origId, cur.corners, cur.enhance, false);
+  }));
+  document.querySelectorAll("[data-jharm]").forEach((b) => b.addEventListener("click", async () => {
+    const r = active();
+    const k = b.getAttribute("data-jharm");
+    const cur = r && r.jha && r.jha[k];
+    if (cur) { await deletePhoto(cur.id); if (cur.origId) await deletePhoto(cur.origId); thumbUrls.delete(cur.id); }
+    const jha = Object.assign({}, r.jha);
+    jha[k] = null;
+    patch({ jha: jha });
+    render();
   }));
   document.querySelectorAll("[data-photoskip]").forEach((b) => b.addEventListener("click", () => {
     const id = b.getAttribute("data-photoskip");
@@ -1496,6 +1536,12 @@ function onAct(e) {
   if (act === "send") sendReport();
   if (act === "sent-yes") markSent();
   if (act === "sent-no") { askSent = false; render(); }
+  if (act === "jhatoggle") {
+    const r = active();
+    if (!r) return;
+    patch({ jha: Object.assign({ front: null, back: null }, r.jha, { on: !(r.jha && r.jha.on) }) });
+    render();
+  }
   if (act === "wxrefresh") {
     const r = active();
     if (!r || !weatherDateOk(r.date)) return;
@@ -1575,6 +1621,7 @@ function openReport(id) {
   screen = "wizard";
   step = 0;
   askSent = false;
+  photoSel = new Set();
   wxManualOpen = false;
   wxError = "";
   render();
@@ -1582,6 +1629,7 @@ function openReport(id) {
 
 async function removeReport(id) {
   const r = store.reports[id];
+  if (r) { const ids = jhaBlobIds(r); for (let j = 0; j < ids.length; j += 1) await deletePhoto(ids[j]); }
   if (r && Array.isArray(r.photos)) {
     for (let i = 0; i < r.photos.length; i += 1) {
       const pid = r.photos[i].id;
@@ -1623,6 +1671,455 @@ function addWriteIn() {
   }
   const target = empty || inputs[inputs.length - 1];
   if (target) target.focus();
+}
+
+const JHA_SLOTS = [["front", "Front: safety information"], ["back", "Back: crew sign in / sign out"]];
+let photoSel = new Set();
+let cropState = null;
+
+function jhaBlobIds(r) {
+  const out = [];
+  const j = r && r.jha;
+  if (!j) return out;
+  ["front", "back"].forEach((k) => { if (j[k]) { if (j[k].id) out.push(j[k].id); if (j[k].origId) out.push(j[k].origId); } });
+  return out;
+}
+
+function jhaPagesOf(r) {
+  const j = r && r.jha;
+  if (!j || !j.on) return [];
+  return JHA_SLOTS.filter((sl) => j[sl[0]] && j[sl[0]].id).map((sl) => ({ id: j[sl[0]].id, label: sl[1] }));
+}
+
+// Which photos share a PDF page. Photos with the same `group` share a page (max 4).
+// With no custom groups, the "per page" preset decides.
+function photoPages(r) {
+  const inc = (r.photos || []).filter((p) => !p.skip);
+  const L = layoutOf(r);
+  if (!inc.some((p) => p.group) && L.ppp > 1) {
+    const out = [];
+    for (let i = 0; i < inc.length; i += L.ppp) out.push(inc.slice(i, i + L.ppp));
+    return out;
+  }
+  const pages = [];
+  const open = new Map();
+  inc.forEach((p) => {
+    if (p.group && open.has(p.group) && open.get(p.group).length < 4) { open.get(p.group).push(p); return; }
+    const pg = [p];
+    pages.push(pg);
+    if (p.group) open.set(p.group, pg);
+  });
+  return pages;
+}
+
+// Turn whatever the preset shows into explicit groups, so custom edits keep the rest as-is.
+function materializeGroups(r) {
+  photoPages(r).forEach((pg) => {
+    const g = pg.length > 1 ? (pg[0].group || uid()) : "";
+    pg.forEach((p) => { p.group = g; });
+  });
+  r.layout = Object.assign({}, layoutOf(r), { ppp: 1 });
+}
+
+function photoAction(act) {
+  const r = active();
+  if (!r) return;
+  const ids = Array.from(photoSel);
+  if (act === "clear") { photoSel = new Set(); render(); return; }
+  if (!ids.length) return;
+  materializeGroups(r);
+  if (act === "combine") {
+    if (ids.length < 2 || ids.length > 4) { toast("Pick 2 to 4 photos to put on one page."); return; }
+    const g = uid();
+    const chosen = r.photos.filter((p) => photoSel.has(p.id));
+    const at = r.photos.findIndex((p) => photoSel.has(p.id));
+    const rest = r.photos.filter((p) => !photoSel.has(p.id));
+    chosen.forEach((p) => { p.group = g; p.skip = false; });
+    const before = r.photos.slice(0, at).filter((p) => !photoSel.has(p.id)).length;
+    r.photos = rest.slice(0, before).concat(chosen, rest.slice(before));
+  }
+  if (act === "separate") r.photos.forEach((p) => { if (photoSel.has(p.id)) p.group = ""; });
+  if (act === "skip") {
+    const allOff = r.photos.filter((p) => photoSel.has(p.id)).every((p) => p.skip);
+    r.photos.forEach((p) => { if (photoSel.has(p.id)) { p.skip = !allOff; p.group = ""; } });
+  }
+  photoSel = new Set();
+  patch({ photos: r.photos, layout: r.layout });
+  render();
+}
+
+function photoPagesCard(r) {
+  const photos = r.photos || [];
+  if (!photos.length) return "";
+  const L = layoutOf(r);
+  const custom = photos.some((p) => p.group);
+  const pages = photoPages(r);
+  const off = photos.filter((p) => p.skip);
+  const num = new Map();
+  photos.forEach((p, i) => num.set(p.id, i + 1));
+  const thumb = (p) => '<button type="button" class="pg-thumb' + (photoSel.has(p.id) ? " sel" : "") + (p.skip ? " off" : "") + '" data-psel="' + esc(p.id) + '">' +
+    '<img data-photo="' + esc(p.id) + '" alt="Photo ' + num.get(p.id) + '" /><span>' + num.get(p.id) + "</span></button>";
+  const presets = [[1, "1 per page"], [2, "2 per page"], [4, "4 per page"]];
+  const n = photoSel.size;
+  const selOff = n && photos.filter((p) => photoSel.has(p.id)).every((p) => p.skip);
+  return "<label>Photo pages</label>" +
+    '<div class="seg">' + presets.map((o) => '<button type="button" data-lppp="' + o[0] + '" class="' + (!custom && L.ppp === o[0] ? "on" : "") + '">' + o[1] + "</button>").join("") + "</div>" +
+    '<p class="hint">Tap photos to select them, then put up to 4 on one page or split them back out.</p>' +
+    '<div class="pg-list">' + pages.map((pg, i) => '<div class="pg"><div class="pg-h">Photo page ' + (i + 1) + (pg.length > 1 ? " · " + pg.length + " photos" : "") + '</div><div class="pg-row n' + pg.length + '">' + pg.map(thumb).join("") + "</div></div>").join("") +
+    (off.length ? '<div class="pg pg-off"><div class="pg-h">Left off the report</div><div class="pg-row">' + off.map(thumb).join("") + "</div></div>" : "") + "</div>" +
+    (n ? '<div class="pg-bar"><b>' + n + " selected</b>" +
+      '<button type="button" class="btn btn-navy" data-pact="combine"' + (n < 2 || n > 4 ? " disabled" : "") + ">Put on one page</button>" +
+      '<button type="button" class="btn btn-outline" data-pact="separate">Separate pages</button>' +
+      '<button type="button" class="btn btn-ghost" data-pact="skip">' + (selOff ? "Add back to report" : "Leave off report") + "</button>" +
+      '<button type="button" class="btn btn-ghost" data-pact="clear">Cancel</button></div><div class="pg-spacer"></div>' : "");
+}
+
+function jhaCard(r) {
+  const j = r.jha || { on: false };
+  let body = '<button type="button" class="check-row' + (j.on ? " on" : "") + '" data-act="jhatoggle"><span class="box">' + (j.on ? "✓" : "") + "</span>Add the JHA briefing to this report</button>";
+  if (j.purged && !j.front && !j.back) body += '<p class="hint">JHA photos removed from phone after 14 days (sent copy is on file).</p>';
+  if (j.on) {
+    body += '<p class="hint">Two pages go between the report and the photos. Take a photo of each side, then drag the corners to the edges of the paper to cut off the background.</p>' +
+      JHA_SLOTS.map((sl) => {
+        const k = sl[0];
+        const has = j[k] && j[k].id;
+        return '<div class="jha-slot"><div class="jha-h">' + sl[1] + "</div>" +
+          (has ? '<img class="jha-thumb" data-photo="' + esc(j[k].id) + '" alt="' + esc(sl[1]) + '" />' +
+            '<div class="jha-btns"><button type="button" class="btn btn-outline" data-jhacrop="' + k + '">Adjust crop</button>' +
+            '<button type="button" class="btn btn-ghost" data-jhacam="' + k + '">Retake</button>' +
+            '<button type="button" class="btn btn-danger" data-jharm="' + k + '">Remove</button></div>'
+            : '<div class="jha-btns"><button type="button" class="btn btn-navy" data-jhacam="' + k + '">Take photo</button>' +
+            '<button type="button" class="btn btn-outline" data-jhalib="' + k + '">From library</button></div>') +
+          '<input type="file" accept="image/*" capture="environment" data-jhafile="' + k + '" hidden />' +
+          '<input type="file" accept="image/*" data-jhafilelib="' + k + '" hidden />' +
+          "</div>";
+      }).join("");
+  }
+  return '<div class="card"><h2>JHA briefing</h2>' + body + "</div>";
+}
+
+function loadImageFromBlob(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => resolve({ img: img, url: url });
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("image")); };
+    img.src = url;
+  });
+}
+
+function resizeToBlob(source, maxEdge, quality) {
+  return new Promise((resolve, reject) => {
+    const w0 = source.naturalWidth || source.width;
+    const h0 = source.naturalHeight || source.height;
+    const sc = Math.min(1, maxEdge / Math.max(w0, h0));
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(w0 * sc));
+    c.height = Math.max(1, Math.round(h0 * sc));
+    c.getContext("2d").drawImage(source, 0, 0, c.width, c.height);
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error("blob"))), "image/jpeg", quality);
+  });
+}
+
+async function onJhaFile(slot, file) {
+  const r = active();
+  if (!r || !file) return;
+  try {
+    const loaded = await loadImageFromBlob(file);
+    const orig = await resizeToBlob(loaded.img, 2400, 0.85);
+    URL.revokeObjectURL(loaded.url);
+    const origId = "jo-" + uid();
+    await putPhoto(origId, orig);
+    openCrop(slot, origId, null, true, true);
+  } catch (e) {
+    toast("Could not open that photo.");
+  }
+}
+
+function defaultCorners(w, h) {
+  const ix = w * 0.06;
+  const iy = h * 0.06;
+  return [{ x: ix, y: iy }, { x: w - ix, y: iy }, { x: w - ix, y: h - iy }, { x: ix, y: h - iy }];
+}
+
+async function openCrop(slot, origId, corners, enhance, fresh) {
+  const blob = await getPhoto(origId);
+  if (!blob) { toast("Original photo not found. Retake it."); return; }
+  const loaded = await loadImageFromBlob(blob);
+  const img = loaded.img;
+  cropState = {
+    slot: slot, origId: origId, img: img, url: loaded.url, fresh: !!fresh,
+    corners: corners && corners.length === 4 ? corners.map((c) => ({ x: c.x, y: c.y })) : defaultCorners(img.naturalWidth, img.naturalHeight),
+    enhance: enhance !== false, drag: -1, scale: 1,
+  };
+  showCrop();
+}
+
+function closeCrop() {
+  const ov = document.getElementById("crop");
+  if (ov) ov.remove();
+  if (cropState && cropState.url) URL.revokeObjectURL(cropState.url);
+  cropState = null;
+  document.body.style.overflow = "";
+}
+
+function showCrop() {
+  let ov = document.getElementById("crop");
+  if (!ov) {
+    ov = document.createElement("div");
+    ov.id = "crop";
+    document.body.appendChild(ov);
+  }
+  document.body.style.overflow = "hidden";
+  const cs = cropState;
+  const label = (JHA_SLOTS.find((sl) => sl[0] === cs.slot) || ["", "JHA"])[1];
+  ov.innerHTML = '<div class="crop-top"><b>' + esc(label) + "</b><span>Drag the 4 corners to the edges of the paper.</span></div>" +
+    '<div class="crop-stage"><canvas id="cropCanvas"></canvas></div>' +
+    '<div class="crop-tools">' +
+      '<button type="button" class="btn btn-ghost" data-crop="rotate">Rotate ↻</button>' +
+      '<button type="button" class="btn btn-ghost" data-crop="reset">Reset corners</button>' +
+      '<button type="button" class="btn ' + (cs.enhance ? "btn-navy" : "btn-ghost") + '" data-crop="enhance">' + (cs.enhance ? "✓ " : "") + "Scan look</button>" +
+    "</div>" +
+    '<div class="crop-nav"><button type="button" class="btn btn-ghost" data-crop="cancel">Cancel</button>' +
+    '<button type="button" class="btn btn-gold" data-crop="save">Use this crop</button></div>';
+  const canvas = document.getElementById("cropCanvas");
+  const stage = ov.querySelector(".crop-stage");
+  const maxW = Math.min(window.innerWidth, 520) - 24;
+  const maxH = Math.max(200, window.innerHeight - 230);
+  const iw = cs.img.naturalWidth;
+  const ih = cs.img.naturalHeight;
+  cs.scale = Math.min(maxW / iw, maxH / ih);
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = Math.round(iw * cs.scale) + "px";
+  canvas.style.height = Math.round(ih * cs.scale) + "px";
+  canvas.width = Math.round(iw * cs.scale * dpr);
+  canvas.height = Math.round(ih * cs.scale * dpr);
+  cs.dpr = dpr;
+  drawCrop();
+  const toImg = (ev) => {
+    const rect = canvas.getBoundingClientRect();
+    return { x: (ev.clientX - rect.left) / cs.scale, y: (ev.clientY - rect.top) / cs.scale };
+  };
+  canvas.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    const pt = toImg(ev);
+    let best = -1;
+    let bd = Infinity;
+    cs.corners.forEach((c, i) => { const d = Math.hypot(c.x - pt.x, c.y - pt.y); if (d < bd) { bd = d; best = i; } });
+    if (bd * cs.scale < 60) { cs.drag = best; canvas.setPointerCapture(ev.pointerId); }
+  });
+  canvas.addEventListener("pointermove", (ev) => {
+    if (cs.drag < 0) return;
+    ev.preventDefault();
+    const pt = toImg(ev);
+    cs.corners[cs.drag] = { x: Math.max(0, Math.min(iw, pt.x)), y: Math.max(0, Math.min(ih, pt.y)) };
+    drawCrop();
+  });
+  const end = () => { cs.drag = -1; drawCrop(); };
+  canvas.addEventListener("pointerup", end);
+  canvas.addEventListener("pointercancel", end);
+  ov.querySelectorAll("[data-crop]").forEach((b) => b.addEventListener("click", () => cropAct(b.getAttribute("data-crop"))));
+  stage.style.touchAction = "none";
+}
+
+function drawCrop() {
+  const cs = cropState;
+  const canvas = document.getElementById("cropCanvas");
+  if (!cs || !canvas) return;
+  const ctx = canvas.getContext("2d");
+  const k = cs.scale * cs.dpr;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(cs.img, 0, 0, canvas.width, canvas.height);
+  ctx.setTransform(k, 0, 0, k, 0, 0);
+  const c = cs.corners;
+  ctx.beginPath();
+  ctx.rect(0, 0, cs.img.naturalWidth, cs.img.naturalHeight);
+  ctx.moveTo(c[0].x, c[0].y); ctx.lineTo(c[1].x, c[1].y); ctx.lineTo(c[2].x, c[2].y); ctx.lineTo(c[3].x, c[3].y); ctx.closePath();
+  ctx.fillStyle = "rgba(7,21,37,0.6)";
+  ctx.fill("evenodd");
+  ctx.beginPath();
+  ctx.moveTo(c[0].x, c[0].y); ctx.lineTo(c[1].x, c[1].y); ctx.lineTo(c[2].x, c[2].y); ctx.lineTo(c[3].x, c[3].y); ctx.closePath();
+  ctx.lineWidth = 2.5 / k;
+  ctx.strokeStyle = "#c49a36";
+  ctx.stroke();
+  c.forEach((pt, i) => {
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, (cs.drag === i ? 16 : 12) / k, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(196,154,54,0.35)";
+    ctx.fill();
+    ctx.lineWidth = 3 / k;
+    ctx.strokeStyle = "#fff";
+    ctx.stroke();
+  });
+}
+
+async function cropAct(act) {
+  const cs = cropState;
+  if (!cs) return;
+  if (act === "cancel") {
+    if (cs.fresh) await deletePhoto(cs.origId);
+    closeCrop();
+    return;
+  }
+  if (act === "reset") { cs.corners = defaultCorners(cs.img.naturalWidth, cs.img.naturalHeight); drawCrop(); return; }
+  if (act === "enhance") { cs.enhance = !cs.enhance; showCrop(); return; }
+  if (act === "rotate") {
+    const c = document.createElement("canvas");
+    c.width = cs.img.naturalHeight;
+    c.height = cs.img.naturalWidth;
+    const ctx = c.getContext("2d");
+    ctx.translate(c.width, 0);
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(cs.img, 0, 0);
+    const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", 0.85));
+    await putPhoto(cs.origId, blob);
+    URL.revokeObjectURL(cs.url);
+    const loaded = await loadImageFromBlob(blob);
+    cs.img = loaded.img;
+    cs.url = loaded.url;
+    cs.corners = defaultCorners(cs.img.naturalWidth, cs.img.naturalHeight);
+    showCrop();
+    return;
+  }
+  if (act === "save") {
+    const btn = document.querySelector('[data-crop="save"]');
+    if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+    try {
+      const out = warpQuad(cs.img, cs.corners, 1700, cs.enhance);
+      const blob = await new Promise((res) => out.toBlob(res, "image/jpeg", 0.72));
+      const r = active();
+      const prev = r.jha[cs.slot];
+      const id = "jc-" + uid();
+      await putPhoto(id, blob);
+      if (prev && prev.id) { await deletePhoto(prev.id); thumbUrls.delete(prev.id); }
+      if (prev && prev.origId && prev.origId !== cs.origId) await deletePhoto(prev.origId);
+      const jha = Object.assign({}, r.jha, { on: true });
+      jha[cs.slot] = { id: id, origId: cs.origId, corners: cs.corners.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })), enhance: cs.enhance };
+      patch({ jha: jha });
+      closeCrop();
+      render();
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = "Use this crop"; }
+      toast("Could not save the crop.");
+    }
+  }
+}
+
+// Perspective-correct the chosen quad into a flat rectangle (like a document scanner).
+function warpQuad(img, corners, maxEdge, enhance) {
+  const p = corners;
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  let W = Math.max(dist(p[0], p[1]), dist(p[3], p[2]));
+  let H = Math.max(dist(p[0], p[3]), dist(p[1], p[2]));
+  // Angled photos make the near edge look wider. JHA sheets are letter paper, so snap
+  // anything close to 8.5 x 11 to the true shape.
+  const ratio = W / H;
+  if (ratio > 0.6 && ratio < 1.0) W = H * (8.5 / 11);
+  else if (ratio >= 1.0 && ratio < 1.65) H = W * (8.5 / 11);
+  const sc = Math.min(1, maxEdge / Math.max(W, H));
+  W = Math.max(1, Math.round(W * sc));
+  H = Math.max(1, Math.round(H * sc));
+  const src = document.createElement("canvas");
+  src.width = img.naturalWidth;
+  src.height = img.naturalHeight;
+  const sctx = src.getContext("2d");
+  sctx.drawImage(img, 0, 0);
+  const sd = sctx.getImageData(0, 0, src.width, src.height).data;
+  const sw = src.width;
+  const sh = src.height;
+  // Unit square -> quad (Heckbert)
+  const x0 = p[0].x, y0 = p[0].y, x1 = p[1].x, y1 = p[1].y, x2 = p[2].x, y2 = p[2].y, x3 = p[3].x, y3 = p[3].y;
+  const dx1 = x1 - x2, dx2 = x3 - x2, dx3 = x0 - x1 + x2 - x3;
+  const dy1 = y1 - y2, dy2 = y3 - y2, dy3 = y0 - y1 + y2 - y3;
+  let a, b, c, d, e, f, g, h;
+  if (Math.abs(dx3) < 1e-9 && Math.abs(dy3) < 1e-9) {
+    a = x1 - x0; b = x2 - x1; c = x0; d = y1 - y0; e = y2 - y1; f = y0; g = 0; h = 0;
+  } else {
+    const den = dx1 * dy2 - dx2 * dy1;
+    g = (dx3 * dy2 - dx2 * dy3) / den;
+    h = (dx1 * dy3 - dx3 * dy1) / den;
+    a = x1 - x0 + g * x1; b = x3 - x0 + h * x3; c = x0;
+    d = y1 - y0 + g * y1; e = y3 - y0 + h * y3; f = y0;
+  }
+  const out = document.createElement("canvas");
+  out.width = W;
+  out.height = H;
+  const octx = out.getContext("2d");
+  const od = octx.createImageData(W, H);
+  const o = od.data;
+  for (let vy = 0; vy < H; vy += 1) {
+    const v = (vy + 0.5) / H;
+    for (let ux = 0; ux < W; ux += 1) {
+      const u = (ux + 0.5) / W;
+      const z = g * u + h * v + 1;
+      let sx = (a * u + b * v + c) / z;
+      let sy = (d * u + e * v + f) / z;
+      sx = Math.max(0, Math.min(sw - 1.001, sx - 0.5));
+      sy = Math.max(0, Math.min(sh - 1.001, sy - 0.5));
+      const ix = sx | 0, iy = sy | 0, fx = sx - ix, fy = sy - iy;
+      const i00 = (iy * sw + ix) * 4, i10 = i00 + 4, i01 = i00 + sw * 4, i11 = i01 + 4;
+      const oi = (vy * W + ux) * 4;
+      for (let ch = 0; ch < 3; ch += 1) {
+        const top = sd[i00 + ch] + (sd[i10 + ch] - sd[i00 + ch]) * fx;
+        const bot = sd[i01 + ch] + (sd[i11 + ch] - sd[i01 + ch]) * fx;
+        o[oi + ch] = top + (bot - top) * fy;
+      }
+      o[oi + 3] = 255;
+    }
+  }
+  if (enhance) {
+    // "Scan look": even out the lighting (paper goes white even in shade), then darken the ink.
+    const gray = new Float32Array(W * H);
+    for (let i = 0, j = 0; j < gray.length; i += 4, j += 1) gray[j] = o[i] * 0.299 + o[i + 1] * 0.587 + o[i + 2] * 0.114;
+    const B = Math.max(16, Math.round(Math.max(W, H) / 40));
+    const bw = Math.ceil(W / B);
+    const bh = Math.ceil(H / B);
+    const bg = new Float32Array(bw * bh);
+    for (let by = 0; by < bh; by += 1) {
+      for (let bx = 0; bx < bw; bx += 1) {
+        // A high percentile of each block = the paper brightness there (ink is dark).
+        const vals = [];
+        for (let yy = by * B; yy < Math.min(H, (by + 1) * B); yy += 2) {
+          for (let xx = bx * B; xx < Math.min(W, (bx + 1) * B); xx += 2) vals.push(gray[yy * W + xx]);
+        }
+        vals.sort((m, n) => m - n);
+        bg[by * bw + bx] = vals.length ? vals[Math.floor(vals.length * 0.9)] : 255;
+      }
+    }
+    // Smooth the background map so block edges never show.
+    const sm = new Float32Array(bg.length);
+    for (let by = 0; by < bh; by += 1) {
+      for (let bx = 0; bx < bw; bx += 1) {
+        let sum = 0, cnt = 0;
+        for (let dy = -1; dy <= 1; dy += 1) for (let dx = -1; dx <= 1; dx += 1) {
+          const nx = bx + dx, ny = by + dy;
+          if (nx >= 0 && ny >= 0 && nx < bw && ny < bh) { sum += bg[ny * bw + nx]; cnt += 1; }
+        }
+        sm[by * bw + bx] = Math.max(40, sum / cnt);
+      }
+    }
+    for (let yy = 0; yy < H; yy += 1) {
+      const fy = Math.min(bh - 1.001, Math.max(0, yy / B - 0.5));
+      const y0i = fy | 0, ty = fy - y0i;
+      for (let xx = 0; xx < W; xx += 1) {
+        const fx = Math.min(bw - 1.001, Math.max(0, xx / B - 0.5));
+        const x0i = fx | 0, tx = fx - x0i;
+        const i00 = y0i * bw + x0i;
+        const top = sm[i00] + (sm[i00 + 1] - sm[i00]) * tx;
+        const bot = sm[i00 + bw] + (sm[i00 + bw + 1] - sm[i00 + bw]) * tx;
+        const back = top + (bot - top) * ty;
+        let t = gray[yy * W + xx] / back;
+        t = (t - 0.45) / (0.9 - 0.45);
+        t = t <= 0 ? 0 : t >= 1 ? 1 : Math.pow(t, 1.6);
+        const vv = Math.round(t * 255);
+        const oi = (yy * W + xx) * 4;
+        o[oi] = vv; o[oi + 1] = vv; o[oi + 2] = vv;
+      }
+    }
+  }
+  octx.putImageData(od, 0, 0);
+  return out;
 }
 
 async function hydratePhotos() {
@@ -1831,6 +2328,7 @@ function reportText(r) {
     "Any near misses today: " + yn(r.nearMiss), r.nearMiss === "yes" ? r.nearMissExplain : "",
     "Any equipment issues today: " + yn(r.equipmentIssues), r.equipmentIssues === "yes" ? r.equipmentIssuesExplain : "",
     ...CLOSEOUT.map((c) => c[1] + ": " + yn(r[c[0]])),
+    jhaPagesOf(r).length ? "JHA briefing attached (" + jhaPagesOf(r).length + " page" + (jhaPagesOf(r).length > 1 ? "s" : "") + ")" : "",
     "", r.photosPurged
       ? "Photos removed from phone after 14 days (sent copy is on file)."
       : "Job photos: " + r.photos.length,
@@ -2434,80 +2932,81 @@ async function buildPdfCore(r, opts) {
     const p = srcPhotos[i];
     const dataUrl = await resolvePhoto(p);
     if (!dataUrl) continue;
-    photos.push({ caption: p.caption || "", takenAt: p.takenAt || "", dataUrl: dataUrl });
+    photos.push({ id: p.id, caption: p.caption || "", takenAt: p.takenAt || "", dataUrl: dataUrl });
   }
-  if (opts.ppp === 2) {
-    for (let i = 0; i < photos.length; i += 2) {
-      doc.addPage();
-      doc.setFillColor(NAVY[0], NAVY[1], NAVY[2]);
-      doc.rect(0, 0, pageW, 36, "F");
-      doc.setTextColor(255, 252, 245);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
-      const range = photos[i + 1] ? (i + 1) + "–" + (i + 2) : String(i + 1);
-      doc.text("Photos " + range + " of " + photos.length + "  ·  Job # " + (r.projectNumber || "—") + "  ·  " + (formatLong(r.date) || r.date), margin, 23);
-      const top0 = 46;
-      const half = (pageH - 40 - top0) / 2;
-      [photos[i], photos[i + 1]].forEach((p, k) => {
-        if (!p) return;
-        let py = top0 + k * half + 14;
-        doc.setTextColor(INK[0], INK[1], INK[2]);
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(11);
-        const capLines = doc.splitTextToSize(String(p.caption || "").trim() || "No description", contentW).slice(0, 2);
-        doc.text(capLines, margin, py);
-        py += capLines.length * 13;
-        const when = formatTaken(p.takenAt);
-        if (when) {
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(9);
-          doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
-          doc.text(when, margin, py);
-          py += 10;
-        }
-        py += 4;
-        const boxH = top0 + (k + 1) * half - py - 8;
-        if (p.dataUrl && boxH > 40) {
-          try { placeFitted(doc, p.dataUrl, margin, py, contentW, boxH); } catch (e) {}
-        }
-      });
-    }
-  }
-  if (opts.ppp !== 2) photos.forEach((p, i) => {
-    doc.addPage();
+  const photoBanner = (text) => {
     doc.setFillColor(NAVY[0], NAVY[1], NAVY[2]);
     doc.rect(0, 0, pageW, 36, "F");
     doc.setTextColor(255, 252, 245);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(11);
-    doc.text(
-      "Photo " + (i + 1) + " of " + photos.length + "  ·  Job # " + (r.projectNumber || "—") + "  ·  " + (formatLong(r.date) || r.date),
-      margin,
-      23
-    );
-    let py = 54;
-    const caption = String(p.caption || "").trim() || "No description";
+    doc.text(text, margin, 23);
+  };
+  const stamp = "Job # " + (r.projectNumber || "—") + "  ·  " + (formatLong(r.date) || r.date);
+  // JHA briefing pages sit between the report and the job photos.
+  let jhaCount = 0;
+  if (!opts.noPhotos) {
+    const jp = jhaPagesOf(r);
+    for (let i = 0; i < jp.length; i += 1) {
+      const dataUrl = await resolvePhoto({ id: jp[i].id });
+      if (!dataUrl) continue;
+      doc.addPage();
+      jhaCount += 1;
+      photoBanner("JHA briefing  ·  " + jp[i].label + "  ·  " + stamp);
+      try { placeFitted(doc, dataUrl, margin, 50, contentW, pageH - 40 - 50); } catch (e) {}
+    }
+  }
+  const byId = new Map(photos.map((p) => [p.id, p]));
+  const groups = opts.noPhotos ? [] : photoPages(r).map((pg) => pg.map((p) => byId.get(p.id)).filter(Boolean)).filter((pg) => pg.length);
+  const totalPhotos = groups.reduce((n, pg) => n + pg.length, 0);
+  let shown = 0;
+  const captionBlock = (p, x, py, w, capSize, timeSize, maxLines) => {
     doc.setTextColor(INK[0], INK[1], INK[2]);
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(14);
-    const capLines = doc.splitTextToSize(caption, contentW);
-    doc.text(capLines, margin, py);
-    py += capLines.length * 18;
+    doc.setFontSize(capSize);
+    const capLines = doc.splitTextToSize(String(p.caption || "").trim() || "No description", w).slice(0, maxLines);
+    doc.text(capLines, x, py);
+    py += capLines.length * (capSize + 3);
     const when = formatTaken(p.takenAt);
     if (when) {
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
+      doc.setFontSize(timeSize);
       doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
-      doc.text(when, margin, py);
-      py += 16;
+      doc.text(when, x, py);
+      py += timeSize + 2;
     }
-    py += 8;
-    const boxH = pageH - 40 - py;
-    if (p.dataUrl && boxH > 40) {
-      try { placeFitted(doc, p.dataUrl, margin, py, contentW, boxH); } catch (e) {}
+    return py + 4;
+  };
+  groups.forEach((pg) => {
+    doc.addPage();
+    const first = shown + 1;
+    shown += pg.length;
+    photoBanner((pg.length === 1 ? "Photo " + first : "Photos " + first + "–" + shown) + " of " + totalPhotos + "  ·  " + stamp);
+    const top0 = 46;
+    if (pg.length === 1) {
+      const py = captionBlock(pg[0], margin, top0 + 18, contentW, 14, 10, 3);
+      try { placeFitted(doc, pg[0].dataUrl, margin, py + 4, contentW, pageH - 40 - py - 4); } catch (e) {}
+    } else if (pg.length === 2) {
+      const half = (pageH - 40 - top0) / 2;
+      pg.forEach((p, k) => {
+        const py = captionBlock(p, margin, top0 + k * half + 14, contentW, 11, 9, 2);
+        const boxH = top0 + (k + 1) * half - py - 8;
+        if (boxH > 40) { try { placeFitted(doc, p.dataUrl, margin, py, contentW, boxH); } catch (e) {} }
+      });
+    } else {
+      const gap = 14;
+      const cellW = (contentW - gap) / 2;
+      const cellH = (pageH - 40 - top0) / 2;
+      pg.forEach((p, k) => {
+        const row = Math.floor(k / 2);
+        let x = margin + (k % 2) * (cellW + gap);
+        if (pg.length === 3 && k === 2) x = margin + (contentW - cellW) / 2;
+        const py = captionBlock(p, x, top0 + row * cellH + 14, cellW, 9.5, 8, 2);
+        const boxH = top0 + (row + 1) * cellH - py - 8;
+        if (boxH > 40) { try { placeFitted(doc, p.dataUrl, x, py, cellW, boxH); } catch (e) {} }
+      });
     }
   });
-
   const pages = doc.getNumberOfPages();
   for (let i = 1; i <= pages; i += 1) {
     doc.setPage(i);
@@ -2517,12 +3016,12 @@ async function buildPdfCore(r, opts) {
     doc.text("STX Corporation — Daily Project Summary", margin, pageH - 22);
     doc.text("Page " + i + " of " + pages, pageW - margin, pageH - 22, { align: "right" });
   }
-  return { blob: doc.output("blob"), reportPages: reportPages, totalPages: pages, level: level };
+  return { blob: doc.output("blob"), reportPages: reportPages, totalPages: pages, jhaPages: jhaCount, level: level };
 }
 
 function layoutOf(r) {
   const L = (r && r.layout) || {};
-  return { size: (L.size === 0 || L.size === 1 || L.size === 2) ? L.size : "auto", ppp: L.ppp === 2 ? 2 : 1 };
+  return { size: (L.size === 0 || L.size === 1 || L.size === 2) ? L.size : "auto", ppp: L.ppp === 2 || L.ppp === 4 ? L.ppp : 1 };
 }
 
 // Auto-fit: try Normal, then Compact, then Tight text until the report (not the
@@ -2571,6 +3070,7 @@ async function previewPdf() {
     return;
   }
   if (!window.jspdf) { toast("PDF library still loading — try again."); return; }
+  if (r.jha && r.jha.on && jhaPagesOf(r).length < 2) toast("JHA is checked but a page photo is missing.");
   // Copy the office email first, while the tap still counts as a user action.
   const email = String(r.recipientEmail || DEFAULT_EMAIL).trim();
   let copyP = null;
@@ -2597,7 +3097,7 @@ async function previewPdf() {
 
 function layoutKey(r) {
   const L = layoutOf(r);
-  return L.size + "|" + L.ppp + "|" + (r.photos || []).map((p) => (p.skip ? 1 : 0)).join("");
+  return L.size + "|" + L.ppp + "|" + (r.photos || []).map((p) => (p.skip ? 1 : 0) + (p.group || "")).join(",") + "|" + jhaPagesOf(r).map((x) => x.id).join(",");
 }
 
 function packStamp(r) {
@@ -2615,11 +3115,13 @@ function setShareBusy(busy) {
   const info = preparedFiles && preparedFiles.info;
   if (!info) { el.className = "layout-status"; el.textContent = ""; return; }
   const names = ["Normal", "Compact", "Tight"];
-  const photoPages = info.totalPages - info.reportPages;
+  const jhaN = info.jhaPages || 0;
+  const photoPages = info.totalPages - info.reportPages - jhaN;
   const fits = info.reportPages === 1;
   el.className = "layout-status " + (fits ? "ok" : "warn");
   el.textContent = (fits ? "✓ Report fits on 1 page" : "Report runs onto " + info.reportPages + " pages") +
     " · " + names[info.level] + " text" +
+    (jhaN ? " · plus " + jhaN + " JHA page" + (jhaN > 1 ? "s" : "") : "") +
     (photoPages ? " · plus " + photoPages + " photo page" + (photoPages > 1 ? "s" : "") : "") +
     (!fits && info.level < 2 ? ". Try Tight." : "");
 }
