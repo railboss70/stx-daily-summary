@@ -1,4 +1,5 @@
 const DEFAULT_EMAIL = "reports@stxrailroad.com";
+const APP_VERSION = "16";
 const CREW_PRESETS = ["Foreman", "Laborer", "Operator", "Hi-Rail Operator", "Truck Driver", "Welder", "Flagman"];
 const EQUIP_PRESETS = ["Excavator", "Tamper", "Regulator", "Spike Driver", "Loader", "Pickup"];
 const PRESETS = CREW_PRESETS.concat(EQUIP_PRESETS);
@@ -488,7 +489,7 @@ function homeHtml() {
       (pendingDelete === r.id ? "Tap again to delete" : "Delete") + "</button></div>"
     ).join("") : '<p class="empty">' + empty + "</p>") +
     "</div>";
-  return '<header class="hero">' + markSvg() +
+  return '<header class="hero"><p class="ver">Version ' + APP_VERSION + "</p>" + markSvg() +
     "<h1>Daily Project Summary</h1>" +
     '<p class="date">' + esc(formatLong(today)) + "</p></header>" +
     '<main class="content">' +
