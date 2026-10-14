@@ -1986,8 +1986,8 @@ async function cropAct(act) {
     const btn = document.querySelector('[data-crop="save"]');
     if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
     try {
-      const out = warpQuad(cs.img, cs.corners, 1700, cs.enhance);
-      const blob = await new Promise((res) => out.toBlob(res, "image/jpeg", 0.72));
+      const out = warpQuad(cs.img, cs.corners, 2000, cs.enhance);
+      const blob = await new Promise((res) => out.toBlob(res, "image/jpeg", 0.8));
       const r = active();
       const prev = r.jha[cs.slot];
       const id = "jc-" + uid();
@@ -2166,7 +2166,7 @@ function compressImage(file) {
     const img = new Image();
     const url = URL.createObjectURL(file);
     img.onload = () => {
-      const maxEdge = 1024;
+      const maxEdge = 1600;
       let width = img.naturalWidth || img.width || 1;
       let height = img.naturalHeight || img.height || 1;
       const scale = Math.min(1, maxEdge / Math.max(width, height));
@@ -2180,7 +2180,7 @@ function compressImage(file) {
       canvas.toBlob((blob) => {
         if (!blob) reject(new Error("compress"));
         else resolve(blob);
-      }, "image/jpeg", 0.6);
+      }, "image/jpeg", 0.8);
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
@@ -2362,12 +2362,61 @@ async function loadLogo() {
   return cachedLogo;
 }
 
-async function resolvePhoto(p) {
+// Shrink a stored photo to fit a byte cap. JPEG size grows roughly with pixel count, so one
+// measured encode tells us how far to scale; a second pass corrects any miss.
+const shrinkCache = new Map();
+async function shrinkToCap(blob, cap, key) {
+  if (!cap || blob.size <= cap) return blob;
+  const ck = (key || "") + "|" + blob.size + "|" + cap;
+  if (shrinkCache.has(ck)) return shrinkCache.get(ck);
+  const loaded = await loadImageFromBlob(blob);
+  const encode = (scale, q) => new Promise((res) => {
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(loaded.img.naturalWidth * scale));
+    c.height = Math.max(1, Math.round(loaded.img.naturalHeight * scale));
+    c.getContext("2d").drawImage(loaded.img, 0, 0, c.width, c.height);
+    c.toBlob(res, "image/jpeg", q);
+  });
+  try {
+    const q = 0.72;
+    let first = await encode(1, q);
+    let best = null;
+    if (first && first.size <= cap) best = first;
+    else {
+      // Bracket the scale: hi = too big, lo = fits. Aim for 85-100% of the cap.
+      let hi = 1;
+      let lo = 0;
+      let scale = Math.max(0.25, Math.sqrt(cap / first.size) * 0.95);
+      for (let i = 0; i < 5; i += 1) {
+        const out = await encode(scale, q);
+        if (out && out.size <= cap) {
+          lo = scale;
+          best = out;
+          if (out.size >= cap * 0.85) break;
+          scale = (lo + hi) / 2;
+        } else {
+          hi = scale;
+          scale = lo ? (lo + hi) / 2 : Math.max(0.2, scale * Math.sqrt(cap / out.size) * 0.9);
+        }
+      }
+      if (!best) best = await encode(Math.max(0.2, lo || 0.3), 0.6);
+    }
+    const result = best && best.size < blob.size ? best : blob;
+    if (shrinkCache.size > 60) shrinkCache.clear();
+    shrinkCache.set(ck, result);
+    return result;
+  } finally {
+    URL.revokeObjectURL(loaded.url);
+  }
+}
+
+async function resolvePhoto(p, cap) {
   if (p && p.dataUrl) return p.dataUrl;
   if (!p || !p.id) return "";
   try {
-    const blob = await getPhoto(p.id);
+    let blob = await getPhoto(p.id);
     if (!blob) return "";
+    if (cap) blob = await shrinkToCap(blob, cap, p.id);
     return await blobToDataUrl(blob);
   } catch (e) {
     return "";
@@ -2930,7 +2979,7 @@ async function buildPdfCore(r, opts) {
   const srcPhotos = opts.noPhotos ? [] : (r.photos || []).filter((p) => !p.skip);
   for (let i = 0; i < srcPhotos.length; i += 1) {
     const p = srcPhotos[i];
-    const dataUrl = await resolvePhoto(p);
+    const dataUrl = await resolvePhoto(p, opts.caps && opts.caps.get(p.id));
     if (!dataUrl) continue;
     photos.push({ id: p.id, caption: p.caption || "", takenAt: p.takenAt || "", dataUrl: dataUrl });
   }
@@ -2948,7 +2997,7 @@ async function buildPdfCore(r, opts) {
   if (!opts.noPhotos) {
     const jp = jhaPagesOf(r);
     for (let i = 0; i < jp.length; i += 1) {
-      const dataUrl = await resolvePhoto({ id: jp[i].id });
+      const dataUrl = await resolvePhoto({ id: jp[i].id }, opts.caps && opts.caps.get(jp[i].id));
       if (!dataUrl) continue;
       doc.addPage();
       jhaCount += 1;
@@ -3026,16 +3075,51 @@ function layoutOf(r) {
 
 // Auto-fit: try Normal, then Compact, then Tight text until the report (not the
 // photo pages) fits on one page. Photos are left out of the trial runs for speed.
+const PDF_LIMIT = 2000000; // reports must stay at or under 2 MB
+
+// Byte caps per image so photos + JHA fit the 2 MB limit. Images that already fit are left alone;
+// if the total is too big, every image is scaled back by the same share.
+async function imageCaps(r, target) {
+  const ids = (r.photos || []).filter((p) => !p.skip).map((p) => p.id).concat(jhaPagesOf(r).map((x) => x.id));
+  const sizes = new Map();
+  let total = 0;
+  for (const id of ids) {
+    let size = 0;
+    try { const b = await getPhoto(id); size = b ? b.size : 0; } catch (e) { size = 0; }
+    sizes.set(id, size);
+    total += size;
+  }
+  const avail = target - 160000; // logo, signature, text and PDF overhead
+  if (total <= avail) return null;
+  const share = Math.max(0.05, avail / total);
+  const caps = new Map();
+  sizes.forEach((size, id) => caps.set(id, Math.max(45000, Math.floor(size * share))));
+  return caps;
+}
+
+async function buildWithinLimit(r, level, ppp) {
+  let target = PDF_LIMIT;
+  let res = null;
+  for (let tries = 0; tries < 4; tries += 1) {
+    const caps = await imageCaps(r, target);
+    res = await buildPdfCore(r, { level: level, ppp: ppp, caps: caps });
+    res.bytes = res.blob.size;
+    if (res.bytes <= PDF_LIMIT) return res;
+    target = Math.floor(target * (PDF_LIMIT / res.bytes) * 0.95);
+  }
+  return res;
+}
+
 async function buildReportPdf(r) {
   const L = layoutOf(r);
-  if (L.size !== "auto") return buildPdfCore(r, { level: L.size, ppp: L.ppp });
+  if (L.size !== "auto") return buildWithinLimit(r, L.size, L.ppp);
   let best = null;
   for (let lv = 0; lv <= 2; lv += 1) {
     const trial = await buildPdfCore(r, { level: lv, noPhotos: true });
     if (!best || trial.reportPages < best.reportPages) best = trial;
     if (trial.reportPages === 1) break;
   }
-  return buildPdfCore(r, { level: best.level, ppp: L.ppp });
+  return buildWithinLimit(r, best.level, L.ppp);
 }
 
 async function buildPdf(r) {
@@ -3123,6 +3207,7 @@ function setShareBusy(busy) {
     " · " + names[info.level] + " text" +
     (jhaN ? " · plus " + jhaN + " JHA page" + (jhaN > 1 ? "s" : "") : "") +
     (photoPages ? " · plus " + photoPages + " photo page" + (photoPages > 1 ? "s" : "") : "") +
+    (info.blob ? " · " + (info.blob.size / 1000000).toFixed(1) + " MB" : "") +
     (!fits && info.level < 2 ? ". Try Tight." : "");
 }
 
