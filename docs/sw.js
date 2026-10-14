@@ -1,9 +1,9 @@
-const CACHE = "stx-dps-v16";
+const CACHE = "stx-dps-v17";
 const ASSETS = [
   "./",
   "./index.html",
   "./app.js",
-  "./app.js?v=16",
+  "./app.js?v=17",
   "./jspdf.umd.min.js",
   "./stx-logo-v2.png",
   "./stx-logo-pdf-v2.jpg",
@@ -23,7 +23,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))
+      Promise.all(keys.filter((key) => key !== CACHE && key !== "stx-preview").map((key) => caches.delete(key)))
     ).then(() => self.clients.claim())
   );
 });
@@ -34,6 +34,15 @@ self.addEventListener("fetch", (event) => {
   try { host = new URL(event.request.url).hostname; } catch (e) { host = ""; }
   if (host === "api.weather.gov") {
     event.respondWith(fetch(event.request));
+    return;
+  }
+  // Report previews live at ./preview/<file name>.pdf so the share sheet keeps the name.
+  if (event.request.url.indexOf("/preview/") >= 0) {
+    event.respondWith((async () => {
+      const cache = await caches.open("stx-preview");
+      const hit = await cache.match(event.request, { ignoreSearch: true });
+      return hit || new Response("Preview expired. Go back to the app and tap Preview PDF again.", { status: 404, headers: { "Content-Type": "text/plain" } });
+    })());
     return;
   }
   event.respondWith((async () => {

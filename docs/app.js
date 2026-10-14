@@ -1,5 +1,5 @@
 const DEFAULT_EMAIL = "reports@stxrailroad.com";
-const APP_VERSION = "16";
+const APP_VERSION = "17";
 const CREW_PRESETS = ["Foreman", "Laborer", "Operator", "Hi-Rail Operator", "Truck Driver", "Welder", "Flagman"];
 const EQUIP_PRESETS = ["Excavator", "Tamper", "Regulator", "Spike Driver", "Loader", "Pickup"];
 const PRESETS = CREW_PRESETS.concat(EQUIP_PRESETS);
@@ -3159,25 +3159,48 @@ async function previewPdf() {
   // Copy the office email first, while the tap still counts as a user action.
   const email = String(r.recipientEmail || DEFAULT_EMAIL).trim();
   let copyP = null;
-  try { if (navigator.clipboard && navigator.clipboard.writeText) copyP = navigator.clipboard.writeText(email); } catch (e) { copyP = null; }
+  try { if (navigator.clipboard && navigator.clipboard.writeText) copyP = navigator.clipboard.writeText(email).then(() => true, () => false); } catch (e) { copyP = null; }
   const w = window.open("", "_blank");
   try {
     const pack = preparedFiles;
     const blob = packMatches(pack, r) ? pack.blob : (await buildReportPdf(r)).blob;
     rememberSettings(r);
     save();
-    const file = new File([blob], fileName(r), { type: "application/pdf" });
-    const url = URL.createObjectURL(file);
+    const url = await previewUrl(blob, fileName(r));
     if (w) w.location = url;
     else {
       downloadBlob(blob, fileName(r));
       toast("Preview blocked. PDF downloaded instead.");
     }
-    if (copyP) copyP.then(() => toast("Office email copied. Paste it in To when you share."), () => {});
+    if (copyP) copyP.then((ok) => { if (ok) toast("Office email copied. Paste it in To when you share."); });
   } catch (err) {
     if (w && w.close) w.close();
     toast("Could not build the PDF.");
   }
+}
+
+// Give the preview a real address that ends in the file name (served by the service worker),
+// so iPhone shares it as "26213- 261014 Matt.pdf" instead of "Unknown.pdf".
+// Falls back to a plain in-memory link if the service worker isn't running yet.
+async function previewUrl(blob, name) {
+  try {
+    if ("caches" in window && navigator.serviceWorker && navigator.serviceWorker.controller) {
+      const cache = await caches.open("stx-preview");
+      const old = await cache.keys();
+      await Promise.all(old.map((req) => cache.delete(req)));
+      const path = new URL("./preview/" + encodeURIComponent(name), location.href).href;
+      const safe = String(name).replace(/["\\]/g, "");
+      await cache.put(path, new Response(blob, {
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Length": String(blob.size),
+          "Content-Disposition": "inline; filename=\"" + safe + "\"; filename*=UTF-8''" + encodeURIComponent(name),
+        },
+      }));
+      return path;
+    }
+  } catch (e) {}
+  return URL.createObjectURL(new File([blob], name, { type: "application/pdf" }));
 }
 
 function layoutKey(r) {
