@@ -1,5 +1,5 @@
 const DEFAULT_EMAIL = "reports@stxrailroad.com";
-const APP_VERSION = "17";
+const APP_VERSION = "18";
 const CREW_PRESETS = ["Foreman", "Laborer", "Operator", "Hi-Rail Operator", "Truck Driver", "Welder", "Flagman"];
 const EQUIP_PRESETS = ["Excavator", "Tamper", "Regulator", "Spike Driver", "Loader", "Pickup"];
 const PRESETS = CREW_PRESETS.concat(EQUIP_PRESETS);
@@ -519,7 +519,10 @@ function wizardHtml() {
     '<div class="nav"><button class="btn btn-ghost" data-act="' + (step === 0 ? "home" : "back") + '">' + (step === 0 ? "Home" : "Back") + "</button>" +
     (step < STEPS.length - 1
       ? '<button class="btn btn-navy" data-act="next">Next</button>'
-      : '<button class="btn btn-gold" data-act="preview">Preview PDF</button>') +
+      : '<button class="btn btn-gold" data-act="preview">Preview PDF</button>' +
+        '<button class="btn btn-navy share-btn" data-act="send" data-share="1"' +
+        (packMatches(preparedFiles, r) ? "" : " disabled") + ">" +
+        (packMatches(preparedFiles, r) ? "Share PDF" : "Preparing…") + "</button>") +
     "</div></main>";
 }
 
@@ -1129,7 +1132,7 @@ function layoutCard(r) {
     '<p class="hint">Auto-fit shrinks the text just enough to keep the report on one page.</p>' +
     photoPagesCard(r) +
     "</div>" +
-    '<p class="hint" style="text-align:center">Tap <b>Preview PDF</b>, then use Share in the preview to email it. The office email is copied so you can paste it.</p>' +
+    '<p class="hint" style="text-align:center">Tap <b>Preview PDF</b>, then <b>Share PDF</b> underneath it to email the report. The office email is copied so you can paste it.</p>' +
     '<button class="btn btn-ghost" data-act="sent-yes">Mark as sent</button>';
 }
 
@@ -3217,6 +3220,11 @@ function packMatches(pack, r) {
 }
 
 function setShareBusy(busy) {
+  const ready = !busy && preparedFiles && preparedFiles.ready;
+  document.querySelectorAll('[data-act="send"]').forEach((b) => {
+    b.disabled = !ready;
+    b.textContent = ready ? "Share PDF" : "Preparing…";
+  });
   const el = document.getElementById("layoutStatus");
   if (!el) return;
   if (busy) { el.className = "layout-status"; el.textContent = "Checking layout…"; return; }
@@ -3302,24 +3310,27 @@ function sendReport() {
   rememberSettings(r);
   save();
   copyP.then((ok) => { if (ok) toast("Office email copied. Paste it in To."); });
-  const files = [pack.pdfFile].concat(pack.photoFiles || []);
-  const payload = {
-    title: "Daily Project Summary — " + (r.projectNumber || "Project") + " — " + r.date,
+  const file = pack.pdfFile || new File([pack.blob], fileName(r), { type: "application/pdf" });
+  const withNote = {
+    title: file.name.replace(/\.pdf$/i, ""),
     text: "Daily Project Summary for project " + (r.projectNumber || "—") + " on " + r.date + ". Please send to " + email + ".",
-    files: files,
+    files: [file],
   };
-  try {
-    if (navigator.share && navigator.canShare && navigator.canShare(payload)) {
-      navigator.share(payload).then(() => {
-        askSent = true;
-        render();
-      }).catch((err) => {
-        if (err && err.name === "AbortError") return;
-        mailFallback(r, pack.blob, email);
-      });
-      return;
-    }
-  } catch (err) {}
+  const filesOnly = { files: [file] };
+  const can = (payload) => {
+    try { return !!(navigator.share && navigator.canShare && navigator.canShare(payload)); } catch (e) { return false; }
+  };
+  const payload = can(withNote) ? withNote : (can(filesOnly) ? filesOnly : null);
+  if (payload) {
+    navigator.share(payload).then(() => {
+      askSent = true;
+      render();
+    }).catch((err) => {
+      if (err && err.name === "AbortError") return;
+      mailFallback(r, pack.blob, email);
+    });
+    return;
+  }
   mailFallback(r, pack.blob, email);
 }
 

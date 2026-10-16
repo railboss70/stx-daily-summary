@@ -1,9 +1,9 @@
-const CACHE = "stx-dps-v17";
+const CACHE = "stx-dps-v18";
 const ASSETS = [
   "./",
   "./index.html",
   "./app.js",
-  "./app.js?v=17",
+  "./app.js?v=18",
   "./jspdf.umd.min.js",
   "./stx-logo-v2.png",
   "./stx-logo-pdf-v2.jpg",
