@@ -1,5 +1,5 @@
 const DEFAULT_EMAIL = "reports@stxrailroad.com";
-const APP_VERSION = "18";
+const APP_VERSION = "19";
 const CREW_PRESETS = ["Foreman", "Laborer", "Operator", "Hi-Rail Operator", "Truck Driver", "Welder", "Flagman"];
 const EQUIP_PRESETS = ["Excavator", "Tamper", "Regulator", "Spike Driver", "Loader", "Pickup"];
 const PRESETS = CREW_PRESETS.concat(EQUIP_PRESETS);
@@ -1132,7 +1132,7 @@ function layoutCard(r) {
     '<p class="hint">Auto-fit shrinks the text just enough to keep the report on one page.</p>' +
     photoPagesCard(r) +
     "</div>" +
-    '<p class="hint" style="text-align:center">Tap <b>Preview PDF</b>, then <b>Share PDF</b> underneath it to email the report. The office email is copied so you can paste it.</p>' +
+    '<p class="hint" style="text-align:center">Tap <b>Preview PDF</b> to look it over. <b>Back to report</b> returns you here, then tap <b>Share PDF</b>.</p>' +
     '<button class="btn btn-ghost" data-act="sent-yes">Mark as sent</button>';
 }
 
@@ -3159,26 +3159,81 @@ async function previewPdf() {
   }
   if (!window.jspdf) { toast("PDF library still loading — try again."); return; }
   if (r.jha && r.jha.on && jhaPagesOf(r).length < 2) toast("JHA is checked but a page photo is missing.");
-  // Copy the office email first, while the tap still counts as a user action.
   const email = String(r.recipientEmail || DEFAULT_EMAIL).trim();
   let copyP = null;
   try { if (navigator.clipboard && navigator.clipboard.writeText) copyP = navigator.clipboard.writeText(email).then(() => true, () => false); } catch (e) { copyP = null; }
-  const w = window.open("", "_blank");
   try {
     const pack = preparedFiles;
     const blob = packMatches(pack, r) ? pack.blob : (await buildReportPdf(r)).blob;
     rememberSettings(r);
     save();
-    const url = await previewUrl(blob, fileName(r));
-    if (w) w.location = url;
-    else {
-      downloadBlob(blob, fileName(r));
-      toast("Preview blocked. PDF downloaded instead.");
-    }
+    await showPreview(blob, fileName(r));
     if (copyP) copyP.then((ok) => { if (ok) toast("Office email copied. Paste it in To when you share."); });
   } catch (err) {
-    if (w && w.close) w.close();
+    closePreview();
     toast("Could not build the PDF.");
+  }
+}
+
+// Preview stays inside the app. The home-screen PDF viewer has no back button,
+// so the report is drawn here under a Back to report bar.
+let previewUrlLive = "";
+let previewDoc = null;
+
+function closePreview() {
+  const el = document.getElementById("pdfPreview");
+  if (el && el.remove) el.remove();
+  if (document.body) document.body.style.overflow = "";
+  if (previewDoc && previewDoc.destroy) {
+    try { previewDoc.destroy(); } catch (e) {}
+  }
+  previewDoc = null;
+  if (previewUrlLive) {
+    try { URL.revokeObjectURL(previewUrlLive); } catch (e) {}
+    previewUrlLive = "";
+  }
+}
+
+async function showPreview(blob, name) {
+  closePreview();
+  const url = URL.createObjectURL(blob);
+  previewUrlLive = url;
+  const root = document.createElement("div");
+  root.id = "pdfPreview";
+  root.className = "pdf-preview";
+  root.innerHTML = '<div class="pdf-bar"><button type="button" id="pdfBack">Back to report</button><span>' +
+    esc(name) + "</span></div>" +
+    '<div class="pdf-pages" id="pdfPages"><p class="hint" style="color:#efe6d2">Opening preview…</p></div>';
+  document.body.appendChild(root);
+  document.body.style.overflow = "hidden";
+  const back = document.getElementById("pdfBack");
+  if (back) back.addEventListener("click", closePreview);
+  const pages = document.getElementById("pdfPages");
+  try {
+    const lib = window.pdfjsLib;
+    if (!lib || !lib.getDocument) throw new Error("viewer");
+    lib.GlobalWorkerOptions.workerSrc = "./pdf.worker.min.js";
+    const doc = await lib.getDocument({ url: url }).promise;
+    previewDoc = doc;
+    if (!document.getElementById("pdfPreview") || !pages) return;
+    pages.innerHTML = "";
+    const cssWidth = Math.max(280, Math.min((window.innerWidth || 360) - 24, 720));
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    for (let i = 1; i <= doc.numPages; i += 1) {
+      if (!document.getElementById("pdfPreview")) return;
+      const page = await doc.getPage(i);
+      const base = page.getViewport({ scale: 1 });
+      const viewport = page.getViewport({ scale: (cssWidth / base.width) * ratio });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      canvas.style.width = cssWidth + "px";
+      pages.appendChild(canvas);
+      await page.render({ canvasContext: canvas.getContext("2d"), viewport: viewport }).promise;
+    }
+  } catch (err) {
+    if (!document.getElementById("pdfPreview") || !pages) return;
+    pages.innerHTML = '<iframe title="Report PDF" src="' + url + '"></iframe>';
   }
 }
 

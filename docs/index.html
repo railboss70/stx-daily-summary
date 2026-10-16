@@ -139,6 +139,13 @@
     .kind button.on { background: var(--navy); border-color: var(--navy); color: #fff; }
     .nav { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
     .nav .share-btn { grid-column: 1 / -1; }
+    .pdf-preview { position: fixed; inset: 0; z-index: 40; background: #1a1408; display: flex; flex-direction: column; }
+    .pdf-bar { display: flex; align-items: center; gap: 10px; padding: calc(10px + env(safe-area-inset-top)) 12px 10px; background: var(--navy); color: #fff; }
+    .pdf-bar button { border: 0; background: var(--brass); color: #1a1403; border-radius: 10px; padding: 12px 14px; font-size: 16px; font-weight: 800; white-space: nowrap; }
+    .pdf-bar span { font-size: 13px; color: rgba(255,252,245,.8); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pdf-pages { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; padding: 12px 12px calc(16px + env(safe-area-inset-bottom)); }
+    .pdf-pages canvas { display: block; width: 100%; height: auto; max-width: 720px; margin: 0 auto 12px; background: #fff; }
+    .pdf-pages iframe { width: 100%; height: 100%; min-height: 70vh; border: 0; background: #fff; }
     .steps { display: flex; gap: 4px; margin: 0 0 12px; }
     .steps button { flex: 1; border: 0; background: transparent; padding: 10px 0; }
     .steps i { display: block; height: 4px; border-radius: 99px; background: #d5cfc0; }
@@ -151,7 +158,7 @@
     .photos img { width: 100%; aspect-ratio: 4/3; object-fit: cover; border-radius: 10px; background: #ddd; }
     .sig { width: 100%; height: 160px; border: 1px solid var(--line); border-radius: 10px; background: #fff; touch-action: none; }
     .empty { color: var(--muted); font-size: 14px; }
-    .toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--navy); color: #fff; padding: 10px 14px; border-radius: 14px; font-size: 13px; display: none; z-index: 20; max-width: min(360px, 92vw); text-align: center; line-height: 1.35; }
+    .toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--navy); color: #fff; padding: 10px 14px; border-radius: 14px; font-size: 13px; display: none; z-index: 60; max-width: min(360px, 92vw); text-align: center; line-height: 1.35; }
   </style>
 </head>
 <body>
@@ -166,11 +173,12 @@
   </div>
   <div class="toast" id="toast"></div>
   <script src="./jspdf.umd.min.js"></script>
+  <script src="./pdf.min.js"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("./sw.js");
     }
   </script>
-  <script src="./app.js?v=18"></script>
+  <script src="./app.js?v=19"></script>
 </body>
 </html>
