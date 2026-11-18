@@ -1,5 +1,5 @@
 const DEFAULT_EMAIL = "reports@stxrailroad.com";
-const APP_VERSION = "20";
+const APP_VERSION = "21";
 const CREW_PRESETS = ["Foreman", "Laborer", "Operator", "Hi-Rail Operator", "Truck Driver", "Welder", "Flagman"];
 const EQUIP_PRESETS = ["Excavator", "Tamper", "Regulator", "Spike Driver", "Loader", "Pickup"];
 const PRESETS = CREW_PRESETS.concat(EQUIP_PRESETS);
@@ -114,6 +114,7 @@ function blankReport(settings) {
     equipmentIssues: "",
     equipmentIssuesExplain: "",
     railWork: "",
+    railGap: "",
     siteSecure: "",
     derailsDown: "",
     locksRemoved: "",
@@ -302,6 +303,7 @@ function fillReport(r) {
   if (r.incidentsExplain == null) r.incidentsExplain = "";
   if (r.equipmentIssuesExplain == null) r.equipmentIssuesExplain = "";
   if (r.railWork == null) r.railWork = "";
+  if (r.railGap == null) r.railGap = "";
   if (r.pdfTitle == null) r.pdfTitle = "";
   if (r.pdfTitleCustom == null) r.pdfTitleCustom = false;
   if (!r.delaysYN && String(r.delays || "").trim()) r.delaysYN = "yes";
@@ -481,7 +483,7 @@ function render() {
     }
   }
   hydratePhotos();
-  if (screen === "wizard" && (step === 1 || step === 6 || (step === 5 && active() && active().railWork === "yes"))) maybeAutoWeather();
+  if (screen === "wizard" && (step === 1 || step === 6)) maybeAutoWeather();
   if (screen === "wizard" && step === 6) prepareSendFiles();
 }
 
@@ -1182,45 +1184,44 @@ function recentChips() {
   const names = store.settings.projectNames || {};
   return '<div class="chips">' + rec.map((p) => '<button type="button" class="chip" data-proj="' + esc(p) + '">' + esc(p) + (names[p] ? " · " + esc(names[p]) : "") + "</button>").join("") + "</div>";
 }
-// Average the day's weather temperatures (7 AM, 12 PM, 4 PM) and look up the
-// rail expansion shim from Table 3. Uses whichever readings are in so far.
-function railCalc(r) {
-  const temps = effSlots(r)
-    .filter((x) => x.status === "ok" && String(x.tempF).trim() !== "" && Number.isFinite(Number(x.tempF)))
-    .map((x) => ({ t: x.t, f: Number(x.tempF) }));
-  if (!temps.length) return null;
-  const avg = temps.reduce((a, x) => a + x.f, 0) / temps.length;
-  const rounded = Math.round(avg);
-  const idx = RAIL_GAPS.findIndex((g) => rounded <= g.max);
-  return { temps: temps, avg: avg, rounded: rounded, idx: idx, row: RAIL_GAPS[idx], missing: SLOT_TIMES.length - temps.length };
-}
-function railGapText(c) {
-  return c.row.max === Infinity ? "No shims necessary" : c.row.gap + " per 39' of rail";
+// The crew picks the rail temperature range from Table 3; nothing is calculated.
+function railRow(r) {
+  const i = r && r.railGap !== "" && r.railGap != null ? Number(r.railGap) : -1;
+  return i >= 0 && RAIL_GAPS[i] ? RAIL_GAPS[i] : null;
 }
 function railHeader(r) {
-  const c = railCalc(r);
-  return c ? "Average temp " + c.rounded + "°F · " + railGapText(c) : "Rail gap · no temperatures recorded";
+  const g = railRow(r);
+  if (!g) return "Rail gap · rail temperature not selected";
+  const range = g.range.charAt(0).toLowerCase() === "b" || g.range.charAt(0).toLowerCase() === "o" ? g.range.charAt(0).toLowerCase() + g.range.slice(1) : g.range;
+  return "Rail temp " + range + " · " + (g.max === Infinity ? "No shims necessary" : g.gap + " per 39' of rail");
 }
 function railPhotoOf(r) {
   return (r && r.railWork === "yes" && (r.photos || []).find((p) => p.rail)) || null;
 }
-// Checkbox in the JHA section.
+// Checkbox in the JHA section. When checked, Table 3 opens and the crew taps the
+// row for the temperature the rail was checked at.
 function railCheck(r) {
   const on = r.railWork === "yes";
-  return '<button type="button" class="check-row' + (on ? " on" : "") + '" data-act="railtoggle" style="margin-top:10px"><span class="box">' + (on ? "✓" : "") + "</span>Setting / installing rail today</button>" +
-    (on ? '<p class="hint" style="margin:8px 0 0">Add a rail gap photo under Job photos below.</p>' : "");
+  let out = '<button type="button" class="check-row' + (on ? " on" : "") + '" data-act="railtoggle" style="margin-top:10px"><span class="box">' + (on ? "✓" : "") + "</span>Setting / installing rail today</button>";
+  if (!on) return out;
+  const cur = r.railGap === "" || r.railGap == null ? -1 : Number(r.railGap);
+  out += '<div class="jha-slot"><div class="jha-h">What temperature was the rail checked at?</div>' +
+    '<p class="hint" style="margin:0 0 8px">Tap the row that matches. Table 3: Expansion Required for Jointed Rail.</p>' +
+    '<div class="rail-pick"><div class="rail-pick-h"><span>Rail temp</span><span>Expansion shim</span></div>' +
+    RAIL_GAPS.map((g, i) => '<button type="button" data-railgap="' + i + '" class="' + (i === cur ? "on" : "") + '"><span>' + esc(g.range) + "</span><span>" + esc(g.gap) + "</span></button>").join("") +
+    "</div>" +
+    '<p class="hint" style="margin:8px 0 0">Approved thickness and material, per 39-foot rail. Then add a rail gap photo under Job photos below.</p></div>';
+  return out;
 }
-// When rail is being set, Job photos asks for a photo of a rail gap, headed with the
-// day's average temperature and the shim size from Table 3.
+// Job photos asks for a photo of a rail gap, headed with the crew's pick from Table 3.
 function railPhotoBlock(r) {
   if (r.railWork !== "yes") return "";
-  const c = railCalc(r);
+  const g = railRow(r);
   const has = !!railPhotoOf(r);
   return '<div class="jha-slot" style="margin:0 0 12px"><div class="jha-h">Rail gap photo' + (has ? " ✓" : " (required)") + "</div>" +
-    (c
-      ? '<div class="rail-result"><div class="rail-avg">Average temp <b>' + c.rounded + '°F</b></div><div class="rail-gap">' + esc(railGapText(c)) + "</div></div>" +
-        (c.missing ? '<p class="hint rail-warn">Only ' + c.temps.length + " of " + SLOT_TIMES.length + " temperatures are in. The average and size update when the rest come in.</p>" : "")
-      : '<p class="hint rail-warn">No temperatures yet. Add the 7 AM, 12 PM and 4 PM weather in the Weather section (or enter them by hand) and the average and shim size will fill in.</p>') +
+    (g
+      ? '<div class="rail-result"><div class="rail-gap">' + esc(railHeader(r)) + "</div></div>"
+      : '<p class="hint rail-warn">Pick the rail temperature in the JHA section above.</p>') +
     (has
       ? '<p class="hint" style="margin:8px 0 0">Added below. It goes in the job photos with the line above as its heading.</p>'
       : '<p class="hint" style="margin:8px 0 8px">Take a photo of a rail gap, or of the crew setting a gap.</p>' +
@@ -1512,6 +1513,10 @@ function bind() {
     applySavedLocation();
     const savedName = (store.settings.projectNames || {})[String(r.projectNumber || "").trim()];
     if (savedName) patch({ jobName: savedName });
+    render();
+  }));
+  document.querySelectorAll("[data-railgap]").forEach((b) => b.addEventListener("click", () => {
+    patch({ railGap: b.getAttribute("data-railgap") });
     render();
   }));
   document.querySelectorAll("[data-yn]").forEach((b) => b.addEventListener("click", () => {
@@ -3258,6 +3263,7 @@ async function previewPdf() {
   }
   if (!window.jspdf) { toast("PDF library still loading — try again."); return; }
   if (r.jha && r.jha.on && jhaPagesOf(r).length < 2) toast("JHA is checked but a page photo is missing.");
+  else if (r.railWork === "yes" && !railRow(r)) toast("Setting rail is checked but the rail temperature isn't picked.");
   else if (r.railWork === "yes" && !railPhotoOf(r)) toast("Setting rail is checked but the rail gap photo is missing.");
   const email = String(r.recipientEmail || DEFAULT_EMAIL).trim();
   let copyP = null;
