@@ -40,6 +40,15 @@
     .content { flex: 1; padding: 16px 16px calc(24px + env(safe-area-inset-bottom)); }
     .card { background: var(--card); border-radius: 14px; padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 2px rgb(20 32 51 / .06); }
     .card h2 { margin: 0 0 10px; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--navy); }
+    .rail-result { background: #eef3ea; border: 1.5px solid var(--ok); border-radius: 10px; padding: 10px 12px; margin: 12px 0 8px; }
+    .rail-gap { font-size: 20px; font-weight: 800; color: var(--ok); }
+    .rail-avg { font-size: 13px; color: var(--ink); }
+    .rail-cap { font-size: 15px; font-weight: 700; color: var(--ok); margin: 0 0 8px; }
+    .rail-warn { color: var(--danger); margin-top: 10px; }
+    .rail-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .rail-table th, .rail-table td { border: 1px solid var(--line); padding: 5px 8px; text-align: left; }
+    .rail-table th { background: var(--paper); color: var(--navy); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+    .rail-table tr.on td { background: var(--navy); color: var(--card); font-weight: 700; }
     .hint { font-size: 13px; color: var(--muted); line-height: 1.4; margin: 0 0 10px; }
     label { display: block; font-size: 12px; font-weight: 700; color: var(--navy); margin: 10px 0 4px; }
     input, textarea, select { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 12px; font-size: 16px; background: #fff; color: var(--ink); font-family: inherit; }
@@ -179,6 +188,6 @@
       navigator.serviceWorker.register("./sw.js");
     }
   </script>
-  <script src="./app.js?v=19"></script>
+  <script src="./app.js?v=20"></script>
 </body>
 </html>

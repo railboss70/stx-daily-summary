@@ -1,5 +1,5 @@
 const DEFAULT_EMAIL = "reports@stxrailroad.com";
-const APP_VERSION = "19";
+const APP_VERSION = "20";
 const CREW_PRESETS = ["Foreman", "Laborer", "Operator", "Hi-Rail Operator", "Truck Driver", "Welder", "Flagman"];
 const EQUIP_PRESETS = ["Excavator", "Tamper", "Regulator", "Spike Driver", "Loader", "Pickup"];
 const PRESETS = CREW_PRESETS.concat(EQUIP_PRESETS);
@@ -39,6 +39,15 @@ const CLOSEOUT = [
   ["chocks", "Equipment parked with wheel chocks", "Equip. parked w/ chocks"],
   ["jobsiteClean", "Jobsite clean", "Jobsite clean"],
   ["materialsSecured", "Materials stored clear of track", "Materials clear of track"],
+];
+// Table 3: Expansion Required for Jointed Rail (shims per 39-foot rail).
+const RAIL_GAPS = [
+  { range: "Below 6°F", max: 5, gap: '5/16" in each joint' },
+  { range: "6–25°F", max: 25, gap: '1/4" in each joint' },
+  { range: "26–45°F", max: 45, gap: '3/16" in each joint' },
+  { range: "46–65°F", max: 65, gap: '1/8" in each joint' },
+  { range: "66–85°F", max: 85, gap: '1/16" in each joint' },
+  { range: "Over 85°F", max: Infinity, gap: "No shims necessary" },
 ];
 const PDF_DENSITY = [
   { font: 9, lh: 11, bar: 14, head: 13, row: 14, gap: 4, sum: 15, tot: 16, safe: 15, sig: 58, sl: 36, ss: 1,
@@ -104,6 +113,7 @@ function blankReport(settings) {
     nearMissExplain: "",
     equipmentIssues: "",
     equipmentIssuesExplain: "",
+    railWork: "",
     siteSecure: "",
     derailsDown: "",
     locksRemoved: "",
@@ -291,6 +301,7 @@ function fillReport(r) {
   if (r.nearMissExplain == null) r.nearMissExplain = "";
   if (r.incidentsExplain == null) r.incidentsExplain = "";
   if (r.equipmentIssuesExplain == null) r.equipmentIssuesExplain = "";
+  if (r.railWork == null) r.railWork = "";
   if (r.pdfTitle == null) r.pdfTitle = "";
   if (r.pdfTitleCustom == null) r.pdfTitleCustom = false;
   if (!r.delaysYN && String(r.delays || "").trim()) r.delaysYN = "yes";
@@ -345,12 +356,13 @@ async function load() {
             takenAt: photo.takenAt || new Date().toISOString(),
             ...(photo.skip ? { skip: true } : {}),
             ...(photo.group ? { group: photo.group } : {}),
+            ...(photo.rail ? { rail: true } : {}),
           });
         } catch (err) {
           nextPhotos.push(photo);
         }
       } else {
-        nextPhotos.push({ id: photo.id, caption: photo.caption || "", takenAt: photo.takenAt || "", ...(photo.skip ? { skip: true } : {}), ...(photo.group ? { group: photo.group } : {}) });
+        nextPhotos.push({ id: photo.id, caption: photo.caption || "", takenAt: photo.takenAt || "", ...(photo.skip ? { skip: true } : {}), ...(photo.group ? { group: photo.group } : {}), ...(photo.rail ? { rail: true } : {}) });
       }
     }
     r.photos = nextPhotos;
@@ -469,7 +481,7 @@ function render() {
     }
   }
   hydratePhotos();
-  if (screen === "wizard" && (step === 1 || step === 6)) maybeAutoWeather();
+  if (screen === "wizard" && (step === 1 || step === 6 || (step === 5 && active() && active().railWork === "yes"))) maybeAutoWeather();
   if (screen === "wizard" && step === 6) prepareSendFiles();
 }
 
@@ -529,7 +541,7 @@ function wizardHtml() {
 const SLOT_TIMES = [
   { hour: 7, minute: 0, t: "7 AM" },
   { hour: 12, minute: 0, t: "12 PM" },
-  { hour: 17, minute: 0, t: "5 PM" },
+  { hour: 16, minute: 0, t: "4 PM" },
 ];
 const PLACE_SUFFIXES = [" city and borough", " metropolitan government", " unified government", " consolidated government", " urban county", " municipality", " city", " town", " village", " cdp", " borough"];
 
@@ -558,6 +570,8 @@ function weatherDateOk(dateStr) {
 
 function wxReady(r) {
   if (!r || !r.wx || r.wx.placeKey !== placeKey(r) || !weatherDateOk(r.date)) return false;
+  // Readings saved before the last slot moved from 5 PM to 4 PM are fetched again.
+  if (!Array.isArray(r.wx.slots) || r.wx.slots.some((s, i) => !s || !SLOT_TIMES[i] || s.t !== SLOT_TIMES[i].t)) return false;
   return Array.isArray(r.wx.slots) && r.wx.slots.some((s) => s && (s.status === "ok" || s.status === "later" || s.status === "miss"));
 }
 
@@ -1096,6 +1110,7 @@ function stepHtml(r) {
       (purgedNote
         ? '<p class="hint">Photos removed from phone after 14 days (sent copy is on file).</p>'
         : '<p class="hint">Add 3–4 photos. Take a new one or pick from your camera roll, then add a short note on each.</p>') +
+      railPhotoBlock(r) +
       '<div class="nav" style="margin:0 0 12px">' +
       '<button class="btn btn-navy" data-act="photo" style="margin:0">Take photo</button>' +
       '<button class="btn btn-outline" data-act="library" style="margin:0">From library</button></div>' +
@@ -1103,8 +1118,10 @@ function stepHtml(r) {
       '<input id="libraryFile" type="file" accept="image/*" multiple hidden />' +
       (r.photos.map((p, i) => '<div class="item">' +
         '<img data-photo="' + esc(p.id) + '" alt="Photo ' + (i + 1) + '" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:10px;background:#ddd" />' +
-        "<label>Photo " + (i + 1) + " notes</label>" +
-        '<input data-caption="' + p.id + '" value="' + esc(p.caption || "") + '" placeholder="What does this show?" />' +
+        (p.rail && r.railWork === "yes"
+          ? "<label>Photo " + (i + 1) + " · Rail gap</label>" + '<p class="rail-cap">' + esc(railHeader(r)) + "</p>"
+          : "<label>Photo " + (i + 1) + " notes</label>" +
+            '<input data-caption="' + p.id + '" value="' + esc(p.caption || "") + '" placeholder="What does this show?" />') +
         '<button class="btn btn-danger" data-rmphoto="' + p.id + '">Remove</button></div>').join("") ||
         (purgedNote ? "" : '<p class="empty">No photos yet.</p>')) +
       "</div>";
@@ -1164,6 +1181,54 @@ function recentChips() {
   if (!rec.length) return "";
   const names = store.settings.projectNames || {};
   return '<div class="chips">' + rec.map((p) => '<button type="button" class="chip" data-proj="' + esc(p) + '">' + esc(p) + (names[p] ? " · " + esc(names[p]) : "") + "</button>").join("") + "</div>";
+}
+// Average the day's weather temperatures (7 AM, 12 PM, 4 PM) and look up the
+// rail expansion shim from Table 3. Uses whichever readings are in so far.
+function railCalc(r) {
+  const temps = effSlots(r)
+    .filter((x) => x.status === "ok" && String(x.tempF).trim() !== "" && Number.isFinite(Number(x.tempF)))
+    .map((x) => ({ t: x.t, f: Number(x.tempF) }));
+  if (!temps.length) return null;
+  const avg = temps.reduce((a, x) => a + x.f, 0) / temps.length;
+  const rounded = Math.round(avg);
+  const idx = RAIL_GAPS.findIndex((g) => rounded <= g.max);
+  return { temps: temps, avg: avg, rounded: rounded, idx: idx, row: RAIL_GAPS[idx], missing: SLOT_TIMES.length - temps.length };
+}
+function railGapText(c) {
+  return c.row.max === Infinity ? "No shims necessary" : c.row.gap + " per 39' of rail";
+}
+function railHeader(r) {
+  const c = railCalc(r);
+  return c ? "Average temp " + c.rounded + "°F · " + railGapText(c) : "Rail gap · no temperatures recorded";
+}
+function railPhotoOf(r) {
+  return (r && r.railWork === "yes" && (r.photos || []).find((p) => p.rail)) || null;
+}
+// Checkbox in the JHA section.
+function railCheck(r) {
+  const on = r.railWork === "yes";
+  return '<button type="button" class="check-row' + (on ? " on" : "") + '" data-act="railtoggle" style="margin-top:10px"><span class="box">' + (on ? "✓" : "") + "</span>Setting / installing rail today</button>" +
+    (on ? '<p class="hint" style="margin:8px 0 0">Add a rail gap photo under Job photos below.</p>' : "");
+}
+// When rail is being set, Job photos asks for a photo of a rail gap, headed with the
+// day's average temperature and the shim size from Table 3.
+function railPhotoBlock(r) {
+  if (r.railWork !== "yes") return "";
+  const c = railCalc(r);
+  const has = !!railPhotoOf(r);
+  return '<div class="jha-slot" style="margin:0 0 12px"><div class="jha-h">Rail gap photo' + (has ? " ✓" : " (required)") + "</div>" +
+    (c
+      ? '<div class="rail-result"><div class="rail-avg">Average temp <b>' + c.rounded + '°F</b></div><div class="rail-gap">' + esc(railGapText(c)) + "</div></div>" +
+        (c.missing ? '<p class="hint rail-warn">Only ' + c.temps.length + " of " + SLOT_TIMES.length + " temperatures are in. The average and size update when the rest come in.</p>" : "")
+      : '<p class="hint rail-warn">No temperatures yet. Add the 7 AM, 12 PM and 4 PM weather in the Weather section (or enter them by hand) and the average and shim size will fill in.</p>') +
+    (has
+      ? '<p class="hint" style="margin:8px 0 0">Added below. It goes in the job photos with the line above as its heading.</p>'
+      : '<p class="hint" style="margin:8px 0 8px">Take a photo of a rail gap, or of the crew setting a gap.</p>' +
+        '<div class="jha-btns"><button type="button" class="btn btn-navy" data-act="railphoto">Take rail gap photo</button>' +
+        '<button type="button" class="btn btn-outline" data-act="raillib">From library</button></div>') +
+    '<input id="railPhotoFile" type="file" accept="image/*" capture="environment" hidden />' +
+    '<input id="railLibFile" type="file" accept="image/*" hidden />' +
+    "</div>";
 }
 function ynCard(title, key, val, explainKey, explain, alertYes) {
   return '<div class="card"><h2>' + title + "</h2>" + ynRow("", key, val, alertYes) +
@@ -1513,6 +1578,10 @@ function bind() {
   const lib = document.getElementById("libraryFile");
   if (cam) cam.addEventListener("change", onPhoto);
   if (lib) lib.addEventListener("change", onPhoto);
+  const rcam = document.getElementById("railPhotoFile");
+  const rlib = document.getElementById("railLibFile");
+  if (rcam) rcam.addEventListener("change", onRailPhoto);
+  if (rlib) rlib.addEventListener("change", onRailPhoto);
 }
 
 function onAct(e) {
@@ -1540,6 +1609,17 @@ function onAct(e) {
   if (act === "send") sendReport();
   if (act === "sent-yes") markSent();
   if (act === "sent-no") { askSent = false; render(); }
+  if (act === "railphoto") { const el = document.getElementById("railPhotoFile"); if (el) el.click(); }
+  if (act === "raillib") { const el = document.getElementById("railLibFile"); if (el) el.click(); }
+  if (act === "railtoggle") {
+    const r = active();
+    if (!r) return;
+    const on = r.railWork !== "yes";
+    // Unchecking keeps any rail photo as an ordinary job photo.
+    const photos = on ? r.photos : r.photos.map((p) => p.rail ? { id: p.id, caption: p.caption || "Rail gap", takenAt: p.takenAt, ...(p.skip ? { skip: true } : {}), ...(p.group ? { group: p.group } : {}) } : p);
+    patch({ railWork: on ? "yes" : "", photos: photos });
+    render();
+  }
   if (act === "jhatoggle") {
     const r = active();
     if (!r) return;
@@ -1799,7 +1879,7 @@ function jhaCard(r) {
           "</div>";
       }).join("");
   }
-  return '<div class="card"><h2>JHA briefing</h2>' + body + "</div>";
+  return '<div class="card"><h2>JHA briefing</h2>' + body + railCheck(r) + "</div>";
 }
 
 function loadImageFromBlob(blob) {
@@ -2165,6 +2245,25 @@ async function onPhoto(e) {
   render();
 }
 
+async function onRailPhoto(e) {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = "";
+  const r = active();
+  if (!file || !r) return;
+  try {
+    const blob = await compressImage(file);
+    const id = uid();
+    await putPhoto(id, blob);
+    const takenAt = file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString();
+    r.photos = [{ id: id, caption: "", takenAt: takenAt, rail: true }].concat(r.photos.filter((p) => !p.rail || r.railWork !== "yes"));
+    r.photosPurged = false;
+  } catch (err) {
+    toast("Could not add that photo.");
+  }
+  save();
+  render();
+}
+
 function compressImage(file) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -2335,7 +2434,7 @@ function reportText(r) {
     jhaPagesOf(r).length ? "JHA briefing attached (" + jhaPagesOf(r).length + " page" + (jhaPagesOf(r).length > 1 ? "s" : "") + ")" : "",
     "", r.photosPurged
       ? "Photos removed from phone after 14 days (sent copy is on file)."
-      : "Job photos: " + r.photos.length,
+      : "Job photos: " + r.photos.length + (railPhotoOf(r) ? "\nRail gap photo: " + railHeader(r) : ""),
     "", "Print name: " + (r.printName || "—"),
   ].filter((x) => x !== "").join("\n");
 }
@@ -2985,7 +3084,7 @@ async function buildPdfCore(r, opts) {
     const p = srcPhotos[i];
     const dataUrl = await resolvePhoto(p, opts.caps && opts.caps.get(p.id));
     if (!dataUrl) continue;
-    photos.push({ id: p.id, caption: p.caption || "", takenAt: p.takenAt || "", dataUrl: dataUrl });
+    photos.push({ id: p.id, caption: p.rail && r.railWork === "yes" ? railHeader(r) : (p.caption || ""), takenAt: p.takenAt || "", dataUrl: dataUrl });
   }
   const photoBanner = (text) => {
     doc.setFillColor(NAVY[0], NAVY[1], NAVY[2]);
@@ -3159,6 +3258,7 @@ async function previewPdf() {
   }
   if (!window.jspdf) { toast("PDF library still loading — try again."); return; }
   if (r.jha && r.jha.on && jhaPagesOf(r).length < 2) toast("JHA is checked but a page photo is missing.");
+  else if (r.railWork === "yes" && !railPhotoOf(r)) toast("Setting rail is checked but the rail gap photo is missing.");
   const email = String(r.recipientEmail || DEFAULT_EMAIL).trim();
   let copyP = null;
   try { if (navigator.clipboard && navigator.clipboard.writeText) copyP = navigator.clipboard.writeText(email).then(() => true, () => false); } catch (e) { copyP = null; }
